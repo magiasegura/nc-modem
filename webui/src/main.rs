@@ -64,6 +64,7 @@ fn usage() -> String {
       --demo                фиктивный модем Qualcomm: посмотреть интерфейс без железа
       --demo-intel          фиктивный модем Intel XMM (Fibocom L8x0)
   -h, --help                эта справка
+  -V, --version             версия
 
 Без -u/-p интерфейс доступен без пароля всем в локальной сети.",
         env!("CARGO_PKG_VERSION"),
@@ -95,6 +96,10 @@ fn parse_args() -> Result<Config, String> {
             "--demo-intel" => cfg.demo_intel = true,
             "-h" | "--help" => {
                 println!("{}", usage());
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("modemui {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             other => return Err(format!("неизвестный аргумент: {}", other)),

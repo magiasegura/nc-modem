@@ -1,6 +1,6 @@
 [package]
 name = "modemui"
-version = "0.1.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.70"
 description = "Веб-интерфейс расширенных функций LTE-модема для роутеров Keenetic"
