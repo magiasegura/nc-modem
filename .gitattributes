@@ -1,0 +1,14 @@
+# Скрипты выполняются на роутере под busybox sh: CRLF там ломает shebang
+# и каждую строку. Храним и выдаём строго с LF, независимо от настроек
+# core.autocrlf на машине коммитящего.
+* text=auto eol=lf
+
+lockband text eol=lf
+setup.sh  text eol=lf
+*.sh      text eol=lf
+*.rs      text eol=lf
+*.js      text eol=lf
+*.css     text eol=lf
+*.html    text eol=lf
+*.yml     text eol=lf
+*.md      text eol=lf
