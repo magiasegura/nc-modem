@@ -29,6 +29,17 @@ curl -fsSL https://raw.githubusercontent.com/magiasegura/nc-modem/main/setup.sh 
 Установщик определяет архитектуру, скачивает нужный бинарь, кладёт `/opt/bin/modemui`,
 создаёт конфиг `/opt/etc/modemui.conf` и сервис `/opt/etc/init.d/S99modemui`.
 
+## Удаление
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/magiasegura/nc-modem/main/uninstall.sh | sh -s -- --unlock
+```
+
+`--unlock` снимает фиксацию соты перед удалением. Это важно: фиксация хранится в NV-памяти
+модема и удалением файлов не снимается, а после удаления снять её будет нечем. При активной
+фиксации скрипт требует явного выбора — `--unlock` или `--keep-lock`. Добавьте `--purge`,
+чтобы удалить и конфиг.
+
 ## Настройка
 
 `/opt/etc/modemui.conf`, после правки — `/opt/etc/init.d/S99modemui restart`:
