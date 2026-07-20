@@ -246,7 +246,7 @@ function drawPlot(canvasId, key, color, unit, minSpan) {
   const canvas = $(canvasId);
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 320;
-  const h = 110;
+  const h = 64;
 
   canvas.width = w * dpr;
   canvas.height = h * dpr;
@@ -268,7 +268,7 @@ function drawPlot(canvasId, key, color, unit, minSpan) {
 
   // Отступ сверху и снизу оставлен под подписи min/max: без него они
   // рисовались за пределами холста и обрезались.
-  const pad = 15;
+  const pad = 12;
   let min = Math.min(...valid);
   let max = Math.max(...valid);
 

@@ -482,6 +482,19 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Строка — это болтовня самого ndmc, а не ответ модема?
+///
+/// ndmc подмешивает в поток свои сообщения: подтверждение доставки и записи
+/// из журнала роутера. В ответе модема им не место — они сбивают и парсеры,
+/// и человека, который смотрит в AT-консоль.
+fn is_ndmc_noise(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("Mobile::Interface:")
+        || t.contains("ndm: Cli::")
+        || t.contains("Cli::Main:")
+        || (t.starts_with('[') && t.contains("] ndm:"))
+}
+
 fn parse_response(cmd: &str, raw: &str) -> AtResponse {
     let raw = &strip_ansi(raw);
     let cleaned = raw.replace('\r', "\n");
@@ -496,6 +509,9 @@ fn parse_response(cmd: &str, raw: &str) -> AtResponse {
         }
         // Эхо отправленной команды.
         if t.eq_ignore_ascii_case(cmd.trim()) {
+            continue;
+        }
+        if is_ndmc_noise(t) {
             continue;
         }
         if t == "OK" {
@@ -513,9 +529,12 @@ fn parse_response(cmd: &str, raw: &str) -> AtResponse {
         body_lines.push(t);
     }
 
+    // Сырой ответ показывает AT-консоль, поэтому болтовню ndmc убираем и из него.
+    let clean_raw: Vec<&str> = raw.lines().filter(|l| !is_ndmc_noise(l)).collect();
+
     AtResponse {
         body: body_lines.join("\n"),
-        raw: raw.clone(),
+        raw: clean_raw.join("\n").trim().to_string(),
         ok,
         error,
     }
@@ -563,6 +582,27 @@ mod tests {
                 .strip_prefix("+CEREG:")
                 .is_some()
         })
+    }
+
+    #[test]
+    fn filters_ndmc_chatter() {
+        // Дословный мусор из вывода на роутере пользователя.
+        let raw = "\u{1b}[K[C] Jul 20 20:59:20 ndm: Cli::Main: system failed [0xcffd00a6], no authenticated user name.\r\n\
+\".Built@Jun-17-2022:06:30:44\"\r\nOK\r\n\r\nMobile::Interface: \"UsbLte0\": got expected response.\r\n";
+        let r = parse_response("ATI", raw);
+        assert!(r.ok);
+        assert_eq!(r.body, "\".Built@Jun-17-2022:06:30:44\"");
+        assert!(!r.raw.contains("Cli::Main"));
+        assert!(!r.raw.contains("Mobile::Interface"));
+    }
+
+    #[test]
+    fn ndmc_noise_does_not_eat_modem_output() {
+        assert!(!is_ndmc_noise("+XLEC: 0,4,5,5,4,3,BAND_LTE_3"));
+        assert!(!is_ndmc_noise("^EFS: /nv/x, 22,0b"));
+        assert!(!is_ndmc_noise("OK"));
+        assert!(is_ndmc_noise("Mobile::Interface: \"UsbLte0\": got expected response."));
+        assert!(is_ndmc_noise("[C] Jul 20 20:59:20 ndm: Cli::Main: system failed"));
     }
 
     #[test]
