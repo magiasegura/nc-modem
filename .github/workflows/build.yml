@@ -87,11 +87,14 @@ jobs:
           test -x "/opt/cross/bin/${{ matrix.target }}-gcc"
           echo "/opt/cross/bin" >> "$GITHUB_PATH"
 
+      # Без -Z build-std-features=panic_immediate_abort: в свежих nightly это
+      # уже не feature, а стратегия паники, и старый флаг ломает сборку core.
+      # Это была лишь экономия размера — panic = "abort" в профиле релиза
+      # и так убирает почти всю паник-машинерию.
       - name: Build
         run: |
           cargo +nightly build --release \
             -Z build-std=std,panic_abort \
-            -Z build-std-features=panic_immediate_abort \
             --target ${{ matrix.target }} \
             --config 'target.${{ matrix.target }}.linker="${{ matrix.target }}-gcc"'
       - uses: actions/upload-artifact@v4
