@@ -601,8 +601,12 @@ mod tests {
         assert!(!is_ndmc_noise("+XLEC: 0,4,5,5,4,3,BAND_LTE_3"));
         assert!(!is_ndmc_noise("^EFS: /nv/x, 22,0b"));
         assert!(!is_ndmc_noise("OK"));
-        assert!(is_ndmc_noise("Mobile::Interface: \"UsbLte0\": got expected response."));
-        assert!(is_ndmc_noise("[C] Jul 20 20:59:20 ndm: Cli::Main: system failed"));
+        assert!(is_ndmc_noise(
+            "Mobile::Interface: \"UsbLte0\": got expected response."
+        ));
+        assert!(is_ndmc_noise(
+            "[C] Jul 20 20:59:20 ndm: Cli::Main: system failed"
+        ));
     }
 
     #[test]
