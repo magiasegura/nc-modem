@@ -242,11 +242,11 @@ function renderNeighbors(list) {
  * у них разные единицы, и любая общая шкала делает одну из линий плоской —
  * ровно это и было видно на прежней версии панели.
  */
-function drawPlot(canvasId, key, color, unit) {
+function drawPlot(canvasId, key, color, unit, minSpan) {
   const canvas = $(canvasId);
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 320;
-  const h = 88;
+  const h = 110;
 
   canvas.width = w * dpr;
   canvas.height = h * dpr;
@@ -266,22 +266,40 @@ function drawPlot(canvasId, key, color, unit) {
     return;
   }
 
-  const pad = 6;
+  // Отступ сверху и снизу оставлен под подписи min/max: без него они
+  // рисовались за пределами холста и обрезались.
+  const pad = 15;
   let min = Math.min(...valid);
   let max = Math.max(...valid);
-  if (max - min < 2) { const m = (max + min) / 2; min = m - 1; max = m + 1; }
+
+  // Минимальная ширина шкалы. Без неё стабильный сигнал растягивается на всю
+  // высоту графика, и колебание в 1 дБ выглядит как обвал связи.
+  if (max - min < minSpan) {
+    const mid = (max + min) / 2;
+    min = mid - minSpan / 2;
+    max = mid + minSpan / 2;
+  }
 
   const x = (i) => (i / (pts.length - 1 || 1)) * w;
   const y = (v) => h - pad - ((v - min) / (max - min)) * (h - 2 * pad);
 
-  // Полка минимума/максимума — тонкая, чтобы не спорить с линией данных.
-  ctx.strokeStyle = css.getPropertyValue('--line').trim();
-  ctx.lineWidth = 1;
-  for (const v of [min, max]) {
-    ctx.beginPath();
-    ctx.moveTo(0, Math.round(y(v)) + 0.5);
-    ctx.lineTo(w, Math.round(y(v)) + 0.5);
-    ctx.stroke();
+  // Заливка под линией: помогает прочесть уровень, не перетягивая внимание.
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color + '33');
+  grad.addColorStop(1, color + '00');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  let fillStarted = false;
+  pts.forEach((v, i) => {
+    if (!has(v)) return;
+    if (!fillStarted) { ctx.moveTo(x(i), h); ctx.lineTo(x(i), y(v)); fillStarted = true; }
+    else ctx.lineTo(x(i), y(v));
+  });
+  if (fillStarted) {
+    const lastIdx = pts.reduce((acc, v, i) => (has(v) ? i : acc), 0);
+    ctx.lineTo(x(lastIdx), h);
+    ctx.closePath();
+    ctx.fill();
   }
 
   ctx.strokeStyle = color;
@@ -297,10 +315,12 @@ function drawPlot(canvasId, key, color, unit) {
   });
   ctx.stroke();
 
+  // Подписи ставим внутрь холста: max над своей линией, min под своей.
   ctx.fillStyle = css.getPropertyValue('--ink-3').trim();
   ctx.font = '10px ui-monospace, monospace';
-  ctx.fillText(max.toFixed(0), 2, y(max) - 3);
-  ctx.fillText(min.toFixed(0), 2, y(min) + 11);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(max.toFixed(0), 2, Math.max(10, y(max) - 4));
+  ctx.fillText(min.toFixed(0), 2, Math.min(h - 3, y(min) + 12));
 
   canvas._geom = { pts, x, y, min, max, w, h, unit, color };
 }
@@ -357,8 +377,9 @@ function attachHover(canvasId) {
 
 function redraw() {
   const css = getComputedStyle(document.documentElement);
-  drawPlot('chart-rsrp', 'rsrp', css.getPropertyValue('--rsrp').trim(), 'дБм');
-  drawPlot('chart-sinr', 'sinr', css.getPropertyValue('--sinr').trim(), '');
+  // 12 дБ для RSRP и 10 единиц для SINR — заметное изменение, а не дрожание.
+  drawPlot('chart-rsrp', 'rsrp', css.getPropertyValue('--rsrp').trim(), 'дБм', 12);
+  drawPlot('chart-sinr', 'sinr', css.getPropertyValue('--sinr').trim(), '', 10);
   $('plot-now-rsrp').textContent = has(signal.rsrp) ? num(signal.rsrp) + ' дБм' : '';
   $('plot-now-sinr').textContent = has(signal.sinr) ? num(signal.sinr, 1) : '';
 }
@@ -468,5 +489,16 @@ attachHover('chart-sinr');
 (async function start() {
   await tick();
   await loadBands();
+
+  // Скан при загрузке: список соседей — это одна AT-команда, и без него
+  // карточка стоит пустой ровно с той информацией, ради которой открыта.
+  if (caps.neighbors) {
+    try {
+      renderNeighbors((await api('/api/scan', {})).neighbors);
+    } catch (e) {
+      console.warn('первичный скан не удался:', e.message);
+    }
+  }
+
   setInterval(tick, POLL_MS);
 })();

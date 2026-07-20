@@ -22,7 +22,7 @@
 
 <main>
 
-  <section class="card">
+  <section class="card card--signal">
     <h2>Сигнал</h2>
 
     <div class="readouts">
@@ -46,19 +46,19 @@
           <span class="plot-title">RSRP, дБм · за час</span>
           <span class="plot-now" id="plot-now-rsrp"></span>
         </div>
-        <div class="plot"><canvas id="chart-rsrp" height="88"></canvas></div>
+        <div class="plot"><canvas id="chart-rsrp" height="110"></canvas></div>
       </div>
       <div>
         <div class="plot-head">
           <span class="plot-title">SINR · за час</span>
           <span class="plot-now" id="plot-now-sinr"></span>
         </div>
-        <div class="plot"><canvas id="chart-sinr" height="88"></canvas></div>
+        <div class="plot"><canvas id="chart-sinr" height="110"></canvas></div>
       </div>
     </div>
   </section>
 
-  <section class="card" id="card-lock">
+  <section class="card card--lock" id="card-lock">
     <h2>Фиксация соты</h2>
 
     <div class="state" id="lock-state">—</div>
@@ -70,8 +70,10 @@
     </form>
 
     <form id="form-pci" class="row">
-      <label class="grow">EARFCN <input type="number" name="earfcn" min="0" max="262143" required></label>
-      <label class="grow">PCI <input type="number" name="pci" min="0" max="503" required></label>
+      <div class="pair">
+        <label>EARFCN <input type="number" name="earfcn" min="0" max="262143" required></label>
+        <label>PCI <input type="number" name="pci" min="0" max="503" required></label>
+      </div>
       <button type="submit" class="primary">Зафиксировать соту</button>
     </form>
 
@@ -80,10 +82,10 @@
       <button id="btn-reset" class="quiet">Перезапустить радио</button>
     </div>
 
-    <p class="note" id="lock-help"></p>
+    <p class="note push" id="lock-help"></p>
   </section>
 
-  <section class="card" id="card-scan">
+  <section class="card card--scan" id="card-scan">
     <h2>Соседние соты</h2>
     <div class="row">
       <button id="btn-scan" class="primary">Сканировать</button>
@@ -98,7 +100,7 @@
     <p class="empty" id="scan-empty">Нажмите «Сканировать», чтобы увидеть, какие соты слышит модем.</p>
   </section>
 
-  <section class="card" id="card-bands">
+  <section class="card card--agg" id="card-bands">
     <h2>Агрегация</h2>
     <ul class="facts" id="agg-facts" hidden>
       <li><span class="k">Несущих</span><span class="v" id="agg-carriers">—</span></li>
@@ -114,10 +116,10 @@
       <label class="grow">Маска диапазонов, hex <input type="text" name="mask" pattern="[0-9A-Fa-f]+" placeholder="8000084"></label>
       <button type="submit">Записать маску</button>
     </form>
-    <p class="note" id="bands-note"></p>
+    <p class="note push" id="bands-note"></p>
   </section>
 
-  <section class="card wide">
+  <section class="card card--console">
     <h2>AT-консоль</h2>
     <form id="form-at" class="row">
       <label class="grow">Команда <input type="text" name="cmd" placeholder="ATI" required autocomplete="off"></label>
