@@ -115,6 +115,35 @@ cargo test
   нужен nightly с `-Z build-std` и musl-кросслинкер. Эта джоба помечена `continue-on-error`,
   чтобы релиз для aarch64/armv7 выходил, даже если mips-сборка не сложится.
 
+### Закреплённые версии
+
+В `env` workflow закреплены две вещи, и это осознанно:
+
+| Переменная | Зачем |
+|---|---|
+| `RUST_NIGHTLY` | Tier 3 требует nightly, а нестабильные флаги в нём меняются без предупреждения — `-Z build-std-features=panic_immediate_abort` уже сломался на ровном месте. |
+| `MUSL_CROSS_RELEASE` | Скачивание по ссылке `latest` означает, что переименование ассета молча уронит сборку. |
+
+Обновлять их следует вручную и по одной, чтобы при поломке было понятно, что именно её вызвало.
+Проверить, что новая дата nightly существует и содержит `rust-src`:
+
+```sh
+curl -sL https://static.rust-lang.org/dist/<ГГГГ-ММ-ДД>/channel-rust-nightly.toml | grep -c pkg.rust-src
+```
+
+### Float-ABI на mips
+
+Таргеты `mips*-unknown-linux-musl` в Rust собираются с `+soft-float` — проверяется так:
+
+```sh
+rustc +nightly -Z unstable-options --print target-spec-json --target mipsel-unknown-linux-musl
+```
+
+Поэтому берутся тулчейны с суффиксом **`sf`** (`mipsel-unknown-linux-muslsf`), а не обычные:
+обычные собраны hard-float, и при смешивании float-аргументы передаются через разные регистры.
+Линкер выдаёт лишь предупреждение, а ломается всё молча в рантайме, поэтому после сборки
+ABI проверяется через `readelf -A`.
+
 ## Предупреждения
 
 - Фиксация несущей/сектора пишет в NV-память модема. Если зафиксированной соты нет в эфире,
