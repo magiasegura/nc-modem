@@ -16,7 +16,7 @@
 Установка обеих частей одной командой:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/setup.sh | sh
+curl -fsSL https://raw.githubusercontent.com/magiasegura/nc-modem/main/setup.sh | sh
 ```
 
 ---
@@ -56,9 +56,11 @@ at+cfun=1,1
 
 ## Установка
 
+Отдельно, без веб-интерфейса:
+
 ```sh
 # на роутере
-curl -fsSL <url>/lockband -o /opt/bin/lockband
+curl -fsSL https://raw.githubusercontent.com/magiasegura/nc-modem/main/lockband -o /opt/bin/lockband
 chmod +x /opt/bin/lockband
 ```
 
@@ -153,9 +155,6 @@ git push origin v0.1.0
 
 CI прогонит тесты, соберёт бинари под все архитектуры и создаст релиз с ассетами
 `modemui-<target>` и `lockband`.
-
-Перед первым релизом замените заглушки `OWNER/REPO` в [`setup.sh`](setup.sh)
-(переменная `REPO`), в этом README и в [`webui/README.md`](webui/README.md).
 
 ## Благодарности
 

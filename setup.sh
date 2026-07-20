@@ -2,17 +2,17 @@
 #
 # Установщик modemui + lockband для Keenetic с Entware.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/setup.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/magiasegura/nc-modem/main/setup.sh | sh
 #
 # Переменные окружения:
-#   MODEMUI_REPO   репозиторий GitHub (по умолчанию OWNER/REPO)
+#   MODEMUI_REPO   репозиторий GitHub (по умолчанию magiasegura/nc-modem)
 #   MODEMUI_PORT   порт веб-интерфейса (по умолчанию 1010)
 #   MODEMUI_USER   логин Basic-аутентификации
 #   MODEMUI_PASS   пароль Basic-аутентификации
 
 set -eu
 
-REPO="${MODEMUI_REPO:-OWNER/REPO}"
+REPO="${MODEMUI_REPO:-magiasegura/nc-modem}"
 RELEASE="https://github.com/$REPO/releases/latest/download"
 PORT="${MODEMUI_PORT:-1010}"
 BIN_DIR="/opt/bin"
