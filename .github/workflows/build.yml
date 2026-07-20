@@ -141,26 +141,35 @@ jobs:
         with:
           path: dist
 
+      # download-artifact кладёт файлы относительно корня рабочей области,
+      # а defaults.run.working-directory для всего workflow — webui.
+      # Поэтому здесь путь задаётся явно.
       - name: Collect release assets
+        working-directory: ${{ github.workspace }}
         run: |
-          cd dist
-          for d in modemui-*; do
+          set -eu
+          # Собираем в отдельный каталог: класть плоские файлы туда же, где
+          # лежат одноимённые каталоги артефактов, — верный способ, чтобы mv
+          # молча переместил файл внутрь каталога вместо переименования.
+          mkdir -p out
+          for d in dist/modemui-*/; do
+            name=$(basename "$d")
             [ -f "$d/modemui" ] || continue
-            mv "$d/modemui" "./${d}"
-            chmod +x "./${d}"
+            cp "$d/modemui" "out/$name"
           done
           # lockband кладём и в релиз тоже, чтобы установленная версия CLI
           # соответствовала версии бинаря, а не текущему состоянию main.
-          cp ../lockband .
-          chmod +x lockband
-          rm -rf modemui-*/ || true
-          ls -la
+          cp lockband out/lockband
+          # Права всё равно не переживают выгрузку в релиз — setup.sh делает
+          # chmod после скачивания. Ставим их ради предсказуемости логов.
+          chmod +x out/*
+          ls -l out
+          # Хотя бы один бинарь обязан быть: пустой релиз хуже упавшей сборки.
+          ls out/modemui-* >/dev/null
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/modemui-*
-            dist/lockband
+          files: out/*
           body: |
             Установка на роутер Keenetic с Entware:
 
