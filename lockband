@@ -1,0 +1,560 @@
+#!/bin/sh
+#
+# lockband - фиксация несущей (EARFCN) и/или сектора (PCI) для модемов на
+# чипсетах Qualcomm (проверено на Foxconn T77W968 / Dell DW5821e) на роутерах
+# Keenetic с Entware.
+#
+# Метод: прямая запись NV/EFS-файлов модема AT-командой at^efs.
+#   /nv/item_files/modem/lte/rrc/csp/earfcn_lock  - 2 байта, LE(EARFCN)
+#   /nv/item_files/modem/lte/rrc/csp/pci_lock     - 4 байта, LE(EARFCN)+LE(PCI)
+#
+# ВНИМАНИЕ: записи носят для сети рекомендательный характер. При фиксации на
+# несуществующий сектор модем может вообще потерять регистрацию - снимается
+# командой `lockband unlock` (нужен доступ к роутеру по LAN, не через модем).
+#
+# Источник метода: 4pda.to/forum/index.php?showtopic=994474 (entry108880980)
+
+set -u
+
+VERSION="1.0.0"
+
+EFS_EARFCN="/nv/item_files/modem/lte/rrc/csp/earfcn_lock"
+EFS_PCI="/nv/item_files/modem/lte/rrc/csp/pci_lock"
+
+DRY_RUN=0
+VERBOSE=0
+ASSUME_YES=0
+OPT_IFACE=""
+OPT_DEV=""
+
+# Кэш выбранного транспорта: "ndmc" | "tty" | "" (ещё не определён)
+TRANSPORT=""
+NDMC_IFACE=""
+TTY_DEV=""
+
+TMPDIR_LB=""
+
+die() {
+	echo "lockband: $*" >&2
+	exit 1
+}
+
+warn() {
+	echo "lockband: $*" >&2
+}
+
+vlog() {
+	[ "$VERBOSE" -eq 1 ] && echo "  | $*" >&2
+	return 0
+}
+
+cleanup() {
+	[ -n "$TMPDIR_LB" ] && [ -d "$TMPDIR_LB" ] && rm -rf "$TMPDIR_LB"
+}
+trap cleanup EXIT INT TERM
+
+usage() {
+	cat <<EOF
+lockband $VERSION - фиксация несущей/сектора LTE-модема на Keenetic (Entware)
+
+Использование:
+  lockband [флаги] <команда> [аргументы]
+
+Команды:
+  status                    показать текущие earfcn_lock / pci_lock
+  cell                      показать текущую соту (EARFCN/PCI), best-effort
+  lock-earfcn <EARFCN>      зафиксировать только несущую
+  lock-pci <EARFCN> <PCI>   зафиксировать несущую + сектор
+  unlock                    снять обе фиксации
+  at '<AT-команда>'         отправить произвольную AT-команду (отладка)
+
+Флаги:
+  -n, --dry-run             только показать AT-команды, ничего не отправлять
+  -i, --iface <IF>          интерфейс ndmc (UsbQmi0 / UsbLte0), иначе автоопределение
+  -d, --dev <path>          AT-порт напрямую (/dev/ttyACM0 ...), иначе автоопределение
+  -y, --yes                 не спрашивать подтверждение перед at+cfun=1,1
+  -v, --verbose             показывать сырой обмен с модемом
+  -h, --help                эта справка
+
+Примеры:
+  lockband cell
+  lockband lock-earfcn 2850
+  lockband lock-pci 2850 57
+  lockband status
+  lockband unlock
+
+Примечание: lock-earfcn и lock-pci взаимоисключающие - при установке одного
+второй автоматически удаляется (иначе конфликт приоритетов в модеме).
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Конверсия чисел
+# ---------------------------------------------------------------------------
+
+is_uint() {
+	case "${1:-}" in
+	'' | *[!0-9]*) return 1 ;;
+	*) return 0 ;;
+	esac
+}
+
+# to_le16 <dec> -> "ll,hh"  (2850 -> "22,0b")
+to_le16() {
+	_v=$1
+	_h=$(printf '%04x' "$_v")
+	# младший байт первым
+	printf '%s,%s' "$(printf '%s' "$_h" | cut -c3-4)" "$(printf '%s' "$_h" | cut -c1-2)"
+	unset _v _h
+}
+
+# from_le16 "ll,hh" -> dec  ("22,0b" -> 2850); пустой ввод -> ""
+from_le16() {
+	_lo=$(printf '%s' "$1" | cut -d, -f1 | tr -d ' ')
+	_hi=$(printf '%s' "$1" | cut -d, -f2 | tr -d ' ')
+	if [ -z "$_lo" ] || [ -z "$_hi" ]; then
+		unset _lo _hi
+		return 1
+	fi
+	printf '%d' $((0x$_hi * 256 + 0x$_lo)) 2>/dev/null || {
+		unset _lo _hi
+		return 1
+	}
+	unset _lo _hi
+}
+
+validate_earfcn() {
+	is_uint "$1" || die "EARFCN должен быть целым числом, получено: '$1'"
+	[ "$1" -le 65535 ] || die "EARFCN $1 > 65535: поле earfcn_lock всего 2 байта, такой канал этим методом не зафиксировать"
+}
+
+validate_pci() {
+	is_uint "$1" || die "PCI должен быть целым числом, получено: '$1'"
+	[ "$1" -le 503 ] || die "PCI $1 вне диапазона 0..503"
+}
+
+# ---------------------------------------------------------------------------
+# Транспорт
+# ---------------------------------------------------------------------------
+
+mktmp() {
+	if [ -z "$TMPDIR_LB" ]; then
+		TMPDIR_LB=$(mktemp -d 2>/dev/null) || TMPDIR_LB="/tmp/lockband.$$"
+		mkdir -p "$TMPDIR_LB" || die "не создать временный каталог"
+	fi
+}
+
+# --- ndmc ---
+
+ndmc_detect() {
+	command -v ndmc >/dev/null 2>&1 || return 1
+
+	if [ -n "$OPT_IFACE" ]; then
+		NDMC_IFACE=$OPT_IFACE
+		return 0
+	fi
+
+	_ifaces=$(ndmc -c 'show interface' 2>/dev/null |
+		tr -c 'A-Za-z0-9' '\n' |
+		grep -E '^Usb(Qmi|Lte|Modem)[0-9]+$' |
+		sort -u)
+
+	for _cand in $(printf '%s\n' "$_ifaces" | grep '^UsbQmi') \
+		$(printf '%s\n' "$_ifaces" | grep '^UsbLte') \
+		$(printf '%s\n' "$_ifaces" | grep '^UsbModem'); do
+		NDMC_IFACE=$_cand
+		vlog "ndmc: пробую интерфейс $NDMC_IFACE"
+		if ndmc -c "interface $NDMC_IFACE tty send ATE0" 2>/dev/null | grep -q 'OK'; then
+			unset _ifaces _cand
+			return 0
+		fi
+	done
+
+	NDMC_IFACE=""
+	unset _ifaces _cand
+	return 1
+}
+
+ndmc_send() {
+	ndmc -c "interface $NDMC_IFACE tty send $1" 2>&1
+}
+
+# --- прямой AT-порт ---
+
+tty_send_raw() {
+	# tty_send_raw <dev> <cmd> -> ответ в stdout
+	_dev=$1
+	_cmd=$2
+	mktmp
+	_out="$TMPDIR_LB/at.out"
+	: >"$_out"
+
+	stty -F "$_dev" raw -echo 115200 2>/dev/null || stty -f "$_dev" raw -echo 115200 2>/dev/null
+
+	if ! exec 3<>"$_dev" 2>/dev/null; then
+		unset _dev _cmd _out
+		return 1
+	fi
+
+	cat <&3 >"$_out" 2>/dev/null &
+	_reader=$!
+
+	printf '%s\r' "$_cmd" >&3
+
+	# ждём до 4 с появления терминатора
+	_i=0
+	while [ "$_i" -lt 40 ]; do
+		if grep -qE '^(OK|ERROR|\+CME ERROR|\+CMS ERROR)' "$_out" 2>/dev/null; then
+			break
+		fi
+		sleep 0.1 2>/dev/null || sleep 1
+		_i=$((_i + 1))
+	done
+
+	kill "$_reader" 2>/dev/null
+	wait "$_reader" 2>/dev/null
+	exec 3>&- 2>/dev/null
+	exec 3<&- 2>/dev/null
+
+	tr -d '\r' <"$_out"
+	unset _dev _cmd _out _reader _i
+	return 0
+}
+
+tty_detect() {
+	if [ -n "$OPT_DEV" ]; then
+		[ -c "$OPT_DEV" ] || die "устройство $OPT_DEV не найдено"
+		TTY_DEV=$OPT_DEV
+		return 0
+	fi
+
+	for _dev in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2 /dev/ttyACM3 \
+		/dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3; do
+		[ -c "$_dev" ] || continue
+		vlog "tty: пробую $_dev"
+		if tty_send_raw "$_dev" "ATE0" | grep -q '^OK'; then
+			TTY_DEV=$_dev
+			unset _dev
+			return 0
+		fi
+	done
+
+	TTY_DEV=""
+	unset _dev
+	return 1
+}
+
+transport_init() {
+	[ -n "$TRANSPORT" ] && return 0
+
+	if [ -z "$OPT_DEV" ] && ndmc_detect; then
+		TRANSPORT="ndmc"
+		vlog "транспорт: ndmc, интерфейс $NDMC_IFACE"
+		return 0
+	fi
+
+	if tty_detect; then
+		TRANSPORT="tty"
+		vlog "транспорт: прямой порт $TTY_DEV"
+		return 0
+	fi
+
+	cat >&2 <<'EOF'
+lockband: не удалось достучаться до модема.
+  - проверьте, что модем подключён и виден роутеру;
+  - ndmc: `ndmc -c 'show interface'` должен показывать UsbQmi0 или UsbLte0
+    (AT-команды поддерживаются с KeeneticOS 3.9);
+  - прямой порт: `ls /dev/ttyACM*` - порт может быть занят прошивкой;
+  - можно указать явно: -i UsbQmi0  или  -d /dev/ttyACM0
+EOF
+	exit 2
+}
+
+# Переключиться на прямой порт (после провала ndmc). 0 - удалось.
+transport_fallback_tty() {
+	[ "$TRANSPORT" = "tty" ] && return 1
+	warn "ndmc исказил команду, пробую прямой AT-порт"
+	if tty_detect; then
+		TRANSPORT="tty"
+		vlog "транспорт: прямой порт $TTY_DEV"
+		return 0
+	fi
+	return 1
+}
+
+# send_at <cmd> -> ответ модема в stdout
+send_at() {
+	transport_init
+	vlog ">> $1"
+	if [ "$TRANSPORT" = "ndmc" ]; then
+		_resp=$(ndmc_send "$1")
+	else
+		_resp=$(tty_send_raw "$TTY_DEV" "$1")
+	fi
+	[ "$VERBOSE" -eq 1 ] && printf '%s\n' "$_resp" | sed 's/^/  < /' >&2
+	printf '%s\n' "$_resp"
+	unset _resp
+}
+
+# ---------------------------------------------------------------------------
+# Работа с EFS
+# ---------------------------------------------------------------------------
+
+# efs_read <path> -> строка байт "22,0b" или пусто
+# Ответ модема: ^EFS: /nv/item_files/.../pci_lock, 22,0b,39,00
+efs_read() {
+	_raw=$(send_at "at^efs=\"$1\"" |
+		tr -d '\r' |
+		grep -i '\^EFS:' |
+		head -n 1 |
+		sed 's/^.*[Ee][Ff][Ss]:[[:space:]]*//' |
+		cut -d, -f2- |
+		tr -d '[:space:]' |
+		tr 'A-F' 'a-f')
+
+	# пропускаем только последовательности hex-байт через запятую
+	case "$_raw" in
+	'') ;;
+	*[!0-9a-f,]*) _raw='' ;;
+	esac
+
+	printf '%s' "$_raw"
+	unset _raw
+}
+
+# efs_write <path> <len> <bytes>; "" bytes + len 0 = удаление
+efs_write() {
+	_path=$1
+	_len=$2
+	_bytes=${3:-}
+
+	if [ "$_len" -eq 0 ]; then
+		_cmd="at^efs=\"$_path\",0"
+	else
+		_cmd="at^efs=\"$_path\",$_len,\"$_bytes\""
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		printf '%s\n' "$_cmd"
+		unset _path _len _bytes _cmd
+		return 0
+	fi
+
+	send_at "$_cmd" >/dev/null
+
+	# контрольное чтение: ndmc может съесть кавычки
+	_got=$(efs_read "$_path")
+	if [ "$_got" != "$_bytes" ]; then
+		if transport_fallback_tty; then
+			send_at "$_cmd" >/dev/null
+			_got=$(efs_read "$_path")
+		fi
+	fi
+
+	if [ "$_got" != "$_bytes" ]; then
+		if [ "$_len" -eq 0 ]; then
+			die "не удалось удалить $_path (в файле осталось: '${_got:-пусто}')"
+		fi
+		die "не удалось записать $_path: ожидалось '$_bytes', в модеме '${_got:-пусто}'"
+	fi
+
+	echo "ok: $_path <- $_bytes"
+	unset _path _len _bytes _cmd _got
+}
+
+modem_reset() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		echo "at+cfun=1,1"
+		return 0
+	fi
+
+	if [ "$ASSUME_YES" -ne 1 ]; then
+		printf 'Перезагрузить модем (at+cfun=1,1)? Связь пропадёт на ~30-60 с. [y/N] '
+		read -r _ans
+		case "$_ans" in
+		y | Y | yes | YES) ;;
+		*)
+			echo "Модем не перезагружен. Изменения вступят в силу после ручной перезагрузки:"
+			echo "  lockband -y at 'at+cfun=1,1'"
+			unset _ans
+			return 0
+			;;
+		esac
+		unset _ans
+	fi
+
+	send_at "at+cfun=1,1" >/dev/null
+	echo "Модем перезагружается, связь восстановится через ~30-60 с."
+}
+
+# ---------------------------------------------------------------------------
+# Команды
+# ---------------------------------------------------------------------------
+
+cmd_status() {
+	_e=$(efs_read "$EFS_EARFCN")
+	_p=$(efs_read "$EFS_PCI")
+
+	if [ -n "$_e" ]; then
+		_ed=$(from_le16 "$_e") || _ed="?"
+		printf 'earfcn_lock : %s\t(%s)\n' "$_ed" "$_e"
+	else
+		printf 'earfcn_lock : not set\n'
+	fi
+
+	if [ -n "$_p" ]; then
+		_pe=$(from_le16 "$(printf '%s' "$_p" | cut -d, -f1,2)") || _pe="?"
+		_pp=$(from_le16 "$(printf '%s' "$_p" | cut -d, -f3,4)") || _pp="?"
+		printf 'pci_lock    : EARFCN %s / PCI %s\t(%s)\n' "$_pe" "$_pp" "$_p"
+	else
+		printf 'pci_lock    : not set\n'
+	fi
+
+	if [ -n "$_e" ] && [ -n "$_p" ]; then
+		warn "установлены обе фиксации сразу - возможен конфликт приоритетов, оставьте одну"
+	fi
+	unset _e _p _ed _pe _pp
+}
+
+cmd_cell() {
+	_found=0
+	for _q in 'AT^DEBUG?' 'AT+GTCCINFO?' 'AT$QCRSRP?' 'AT+CEREG=2;+CEREG?' 'AT+COPS?'; do
+		_resp=$(send_at "$_q")
+		printf '%s\n' "$_resp" | grep -qi 'ERROR' && continue
+		printf '%s\n' "$_resp" | grep -qE '[0-9]' || continue
+
+		echo "--- $_q"
+		printf '%s\n' "$_resp" | grep -v '^[[:space:]]*$'
+		echo
+		_found=1
+
+		# мягкий парсинг ^DEBUG: EARFCN(DL/UL): 1575/19575 / eNB ID(PCI): 25733-2(161)
+		_earfcn=$(printf '%s\n' "$_resp" |
+			sed -n 's/.*EARFCN[^:]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' | head -n 1)
+		_pci=$(printf '%s\n' "$_resp" |
+			sed -n 's/.*PCI[^(]*(\{0,1\}[^0-9]*\([0-9]\{1,\})\{0,1\}\)[^0-9]*$/\1/p' |
+			tr -d ')' | head -n 1)
+
+		if [ -n "$_earfcn" ] && [ -n "$_pci" ]; then
+			echo "Похоже: EARFCN=$_earfcn PCI=$_pci"
+			echo "  lockband lock-pci $_earfcn $_pci"
+			break
+		elif [ -n "$_earfcn" ]; then
+			echo "Похоже: EARFCN=$_earfcn"
+			echo "  lockband lock-earfcn $_earfcn"
+			break
+		fi
+	done
+
+	if [ "$_found" -eq 0 ]; then
+		warn "модем не ответил ни на одну из диагностических команд"
+		warn "определите EARFCN/PCI иначе: cellmapper.net, netmonitor, NSG"
+		return 1
+	fi
+	unset _found _q _resp _earfcn _pci
+}
+
+cmd_lock_earfcn() {
+	validate_earfcn "$1"
+	_bytes=$(to_le16 "$1")
+	echo "Фиксация несущей: EARFCN $1 -> $_bytes"
+	efs_write "$EFS_EARFCN" 2 "$_bytes"
+	efs_write "$EFS_PCI" 0 ""
+	modem_reset
+	unset _bytes
+}
+
+cmd_lock_pci() {
+	validate_earfcn "$1"
+	validate_pci "$2"
+	_bytes="$(to_le16 "$1"),$(to_le16 "$2")"
+	echo "Фиксация сектора: EARFCN $1 / PCI $2 -> $_bytes"
+	warn "если такого сектора нет в эфире, модем потеряет регистрацию - снимается 'lockband unlock'"
+	efs_write "$EFS_PCI" 4 "$_bytes"
+	efs_write "$EFS_EARFCN" 0 ""
+	modem_reset
+	unset _bytes
+}
+
+cmd_unlock() {
+	echo "Снятие фиксации"
+	efs_write "$EFS_EARFCN" 0 ""
+	efs_write "$EFS_PCI" 0 ""
+	modem_reset
+}
+
+cmd_at() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		printf '%s\n' "$1"
+		return 0
+	fi
+	send_at "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Разбор аргументов
+# ---------------------------------------------------------------------------
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-n | --dry-run) DRY_RUN=1 ;;
+	-v | --verbose) VERBOSE=1 ;;
+	-y | --yes) ASSUME_YES=1 ;;
+	-i | --iface)
+		shift
+		[ $# -gt 0 ] || die "-i требует имя интерфейса"
+		OPT_IFACE=$1
+		;;
+	-d | --dev)
+		shift
+		[ $# -gt 0 ] || die "-d требует путь к устройству"
+		OPT_DEV=$1
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--version)
+		echo "lockband $VERSION"
+		exit 0
+		;;
+	-*) die "неизвестный флаг: $1 (см. --help)" ;;
+	*) break ;;
+	esac
+	shift
+done
+
+[ $# -gt 0 ] || {
+	usage
+	exit 1
+}
+
+CMD=$1
+shift
+
+case "$CMD" in
+status)
+	cmd_status
+	;;
+cell)
+	cmd_cell
+	;;
+lock-earfcn)
+	[ $# -eq 1 ] || die "использование: lockband lock-earfcn <EARFCN>"
+	cmd_lock_earfcn "$1"
+	;;
+lock-pci)
+	[ $# -eq 2 ] || die "использование: lockband lock-pci <EARFCN> <PCI>"
+	cmd_lock_pci "$1" "$2"
+	;;
+unlock)
+	cmd_unlock
+	;;
+at)
+	[ $# -eq 1 ] || die "использование: lockband at '<AT-команда>'"
+	cmd_at "$1"
+	;;
+*)
+	die "неизвестная команда: $CMD (см. --help)"
+	;;
+esac

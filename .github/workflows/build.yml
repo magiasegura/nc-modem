@@ -1,0 +1,135 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: webui
+
+jobs:
+  # Тесты гоняем на хосте: они чистые, железо не нужно.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  # aarch64 и armv7 — Tier 2, собираются стабильным Rust.
+  build-tier2:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            cc: aarch64-linux-gnu-gcc
+            apt: gcc-aarch64-linux-gnu
+          - target: armv7-unknown-linux-musleabihf
+            cc: arm-linux-gnueabihf-gcc
+            apt: gcc-arm-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            --config 'target.${{ matrix.target }}.linker="${{ matrix.cc }}"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modemui-${{ matrix.target }}
+          path: webui/target/${{ matrix.target }}/release/modemui
+
+  # mipsel/mips (MT7621 и родня) — Tier 3: готового std нет, нужен
+  # nightly + build-std и настоящий musl-кросслинкер.
+  # continue-on-error: даже если тут не сложится, релиз с aarch64/armv7 выйдет.
+  build-mips:
+    needs: test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: mipsel-unknown-linux-musl
+            toolchain: mipsel-linux-musl
+          - target: mips-unknown-linux-musl
+            toolchain: mips-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Fetch musl cross toolchain
+        run: |
+          cd /tmp
+          curl -fL --retry 3 -o tc.tgz \
+            "https://github.com/musl-cross/musl-cross/releases/latest/download/${{ matrix.toolchain }}.tar.xz" \
+            || curl -fL --retry 3 -o tc.tgz "https://musl.cc/${{ matrix.toolchain }}-cross.tgz"
+          mkdir -p /opt/cross && tar -xf tc.tgz -C /opt/cross --strip-components=1
+          echo "/opt/cross/bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          cargo +nightly build --release \
+            -Z build-std=std,panic_abort \
+            -Z build-std-features=panic_immediate_abort \
+            --target ${{ matrix.target }} \
+            --config 'target.${{ matrix.target }}.linker="${{ matrix.toolchain }}-gcc"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modemui-${{ matrix.target }}
+          path: webui/target/${{ matrix.target }}/release/modemui
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-tier2, build-mips]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Collect release assets
+        run: |
+          cd dist
+          for d in modemui-*; do
+            [ -f "$d/modemui" ] || continue
+            mv "$d/modemui" "./${d}"
+            chmod +x "./${d}"
+          done
+          # lockband кладём и в релиз тоже, чтобы установленная версия CLI
+          # соответствовала версии бинаря, а не текущему состоянию main.
+          cp ../lockband .
+          chmod +x lockband
+          rm -rf modemui-*/ || true
+          ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/modemui-*
+            dist/lockband
+          body: |
+            Установка на роутер Keenetic с Entware:
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/setup.sh | sh
+            ```

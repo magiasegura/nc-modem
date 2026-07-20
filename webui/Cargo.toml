@@ -1,0 +1,19 @@
+[package]
+name = "modemui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Веб-интерфейс расширенных функций LTE-модема для роутеров Keenetic"
+license = "MIT"
+
+# Никаких внешних зависимостей: только std.
+# Это даёт кросс-компиляцию под mipsel/mips/aarch64/armv7 без C-тулчейна
+# и бинарь, который не тянет ничего в /opt.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
