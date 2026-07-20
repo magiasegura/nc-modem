@@ -6,7 +6,9 @@
 
 mod api;
 mod at;
+mod bands;
 mod http;
+mod intel;
 mod json;
 mod modem;
 
@@ -17,6 +19,8 @@ use std::time::Duration;
 const DEFAULT_PORT: u16 = 1010;
 /// Период фонового опроса метрик.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// У модемов Intel фиксацию из модема не прочитать, поэтому помним её сами.
+const DEFAULT_STATE: &str = "/opt/etc/modemui.lock";
 
 struct Config {
     listen: String,
@@ -25,6 +29,9 @@ struct Config {
     user: Option<String>,
     pass: Option<String>,
     demo: bool,
+    demo_intel: bool,
+    /// Где хранить состояние фиксации для модемов Intel.
+    state: String,
 }
 
 impl Default for Config {
@@ -36,6 +43,8 @@ impl Default for Config {
             user: None,
             pass: None,
             demo: false,
+            demo_intel: false,
+            state: DEFAULT_STATE.to_string(),
         }
     }
 }
@@ -51,12 +60,15 @@ fn usage() -> String {
   -d, --dev <path>          AT-порт напрямую (/dev/ttyACM0), иначе автоопределение
   -u, --user <name>         логин Basic-аутентификации
   -p, --pass <pass>         пароль Basic-аутентификации
-      --demo                фиктивный модем: посмотреть интерфейс без железа
+      --state <path>        файл состояния фиксации для Intel (по умолчанию {})
+      --demo                фиктивный модем Qualcomm: посмотреть интерфейс без железа
+      --demo-intel          фиктивный модем Intel XMM (Fibocom L8x0)
   -h, --help                эта справка
 
 Без -u/-p интерфейс доступен без пароля всем в локальной сети.",
         env!("CARGO_PKG_VERSION"),
-        DEFAULT_PORT
+        DEFAULT_PORT,
+        DEFAULT_STATE
     )
 }
 
@@ -78,7 +90,9 @@ fn parse_args() -> Result<Config, String> {
             "-d" | "--dev" => cfg.dev = Some(take(&mut i, "--dev")?),
             "-u" | "--user" => cfg.user = Some(take(&mut i, "--user")?),
             "-p" | "--pass" => cfg.pass = Some(take(&mut i, "--pass")?),
+            "--state" => cfg.state = take(&mut i, "--state")?,
             "--demo" => cfg.demo = true,
+            "--demo-intel" => cfg.demo_intel = true,
             "-h" | "--help" => {
                 println!("{}", usage());
                 std::process::exit(0);
@@ -99,7 +113,10 @@ fn main() {
         }
     };
 
-    let detected = if cfg.demo {
+    let detected = if cfg.demo_intel {
+        eprintln!("modemui: РЕЖИМ DEMO (Intel) — модем не опрашивается, данные вымышленные");
+        Some(at::Transport::MockIntel)
+    } else if cfg.demo {
         eprintln!("modemui: РЕЖИМ DEMO — модем не опрашивается, данные вымышленные");
         Some(at::Transport::Mock)
     } else {
@@ -122,18 +139,27 @@ fn main() {
 
     println!("modemui: транспорт {}", transport.describe());
 
-    let modem = Arc::new(modem::Modem::new(transport));
+    let modem = Arc::new(modem::Modem::new(transport, cfg.state.clone()));
     modem.probe();
 
     let caps = modem.caps();
-    if !caps.efs {
-        eprintln!(
-            "modemui: ВНИМАНИЕ - модем не отвечает на at^efs, фиксация EARFCN/PCI работать не будет"
-        );
+    match caps.family {
+        modem::Family::Qualcomm => println!("modemui: модем Qualcomm, фиксация через at^efs"),
+        modem::Family::Intel => {
+            println!("modemui: модем Intel XMM, фиксация через at@sic:freq_lock");
+            println!("modemui: состояние фиксации хранится в {}", cfg.state);
+        }
+        modem::Family::Unknown => eprintln!(
+            "modemui: ВНИМАНИЕ - семейство модема не определено, фиксация работать не будет\n\
+             (не ответили ни at^efs для Qualcomm, ни AT+XCESQ для Intel)"
+        ),
     }
     println!(
-        "modemui: возможности - efs={} serving={:?} neighbors={:?} bands={:?}",
-        caps.efs, caps.serving, caps.neighbors, caps.bands_query
+        "modemui: возможности - семейство={} serving={:?} neighbors={:?} bands={:?}",
+        caps.family.as_str(),
+        caps.serving,
+        caps.neighbors,
+        caps.bands_query
     );
 
     // Фоновый опрос метрик: HTTP-запросы отдают закэшированное значение,

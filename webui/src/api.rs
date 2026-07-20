@@ -65,7 +65,7 @@ fn lock_earfcn(modem: &Arc<Modem>, req: &Request) -> Response {
 
 fn lock_pci(modem: &Arc<Modem>, req: &Request) -> Response {
     let form = parse_form(&req.body);
-    let earfcn = match parse_u16(form_get(&form, "earfcn"), "EARFCN", 65535) {
+    let earfcn = match parse_u32(form_get(&form, "earfcn"), "EARFCN", 262143) {
         Ok(v) => v,
         Err(e) => return err(400, &e),
     };
@@ -141,6 +141,7 @@ fn lock_json(l: &LockState) -> Json {
     Json::obj(vec![
         ("earfcn", Json::opt_int(l.earfcn.map(|v| v as i64))),
         ("pciEarfcn", Json::opt_int(l.pci_earfcn.map(|v| v as i64))),
+        ("fromOurRecords", Json::Bool(l.from_our_records)),
         ("pci", Json::opt_int(l.pci.map(|v| v as i64))),
         ("rawEarfcn", Json::opt_str(l.raw_earfcn.clone())),
         ("rawPci", Json::opt_str(l.raw_pci.clone())),
@@ -164,6 +165,7 @@ fn signal_json(s: &Signal) -> Json {
 
 fn caps_json(c: &Caps) -> Json {
     Json::obj(vec![
+        ("family", Json::str(c.family.as_str())),
         ("efs", Json::Bool(c.efs)),
         ("serving", Json::opt_str(c.serving.clone())),
         ("neighbors", Json::opt_str(c.neighbors.clone())),
@@ -209,6 +211,23 @@ fn history_json(samples: &[Sample]) -> Json {
 // ---------------------------------------------------------------------------
 // Помощники
 // ---------------------------------------------------------------------------
+
+fn parse_u32(raw: Option<&str>, name: &str, max: u32) -> Result<u32, String> {
+    let raw = raw.map(|s| s.trim()).unwrap_or("");
+    if raw.is_empty() {
+        return Err(format!("не указан {}", name));
+    }
+    let v: u32 = raw
+        .parse()
+        .map_err(|_| format!("{} должен быть целым числом, получено «{}»", name, raw))?;
+    if v > max {
+        return Err(format!(
+            "{} {} вне допустимого диапазона 0..{}",
+            name, v, max
+        ));
+    }
+    Ok(v)
+}
 
 fn parse_u16(raw: Option<&str>, name: &str, max: u16) -> Result<u16, String> {
     let raw = raw.map(|s| s.trim()).unwrap_or("");

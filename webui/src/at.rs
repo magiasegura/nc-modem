@@ -25,6 +25,8 @@ pub enum Transport {
     Serial { dev: String },
     /// Фиктивный модем для `--demo`: посмотреть UI без железа.
     Mock,
+    /// Фиктивный модем Intel XMM для `--demo-intel`.
+    MockIntel,
 }
 
 impl Transport {
@@ -32,7 +34,8 @@ impl Transport {
         match self {
             Transport::Ndmc { iface } => format!("ndmc:{}", iface),
             Transport::Serial { dev } => format!("serial:{}", dev),
-            Transport::Mock => "demo (модем не подключён)".to_string(),
+            Transport::Mock => "demo qualcomm (модем не подключён)".to_string(),
+            Transport::MockIntel => "demo intel (модем не подключён)".to_string(),
         }
     }
 }
@@ -92,6 +95,7 @@ impl AtPort {
             Transport::Ndmc { iface } => ndmc_send(iface, cmd)?,
             Transport::Serial { dev } => serial_send(dev, cmd, timeout)?,
             Transport::Mock => mock_send(cmd),
+            Transport::MockIntel => mock_intel_send(cmd),
         };
         Ok(parse_response(cmd, &raw))
     }
@@ -206,6 +210,66 @@ fn mock_send(cmd: &str) -> String {
         "AT+CFUN=1,1" => "OK\r\n".to_string(),
         _ if upper.starts_with("AT+GTACT=") => "OK\r\n".to_string(),
         _ => "ERROR\r\n".to_string(),
+    }
+}
+
+/// Фиктивный Intel-модем. Ответы — дословный вывод реального Fibocom L860.
+fn mock_intel_send(cmd: &str) -> String {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    static LOCKED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    let locked = LOCKED.get_or_init(|| Mutex::new(None));
+
+    let c = cmd.trim();
+    let upper = c.to_ascii_uppercase();
+
+    if upper.starts_with("AT@SIC:FREQ_LOCK") {
+        *locked.lock().unwrap() = Some(c.to_string());
+        return "OK
+"
+        .to_string();
+    }
+
+    match upper.as_str() {
+        "ATI" => "\".Built@Jun-17-2022:06:30:44\"
+OK
+"
+        .to_string(),
+        "ATE0" | "AT+CFUN=4" | "AT+CFUN=15" => "OK
+"
+        .to_string(),
+        "AT+XCESQ?" => "+XCESQ: 0,99,99,255,255,24,62,34,255,255,255,255
+OK
+"
+        .to_string(),
+        "AT+XMCI=1" => {
+            "+XMCI: 4,250,02,\"0x2608\",\"0x026D741E\",\"0x0108\",\"0x00000642\",\"0x00004C92\",
+             \"0xFFFFFFFF\",58,22,38,\"0x00000003\",\"0x00000000\"
+             +XMCI: 5,000,000,\"0xFFFE\",\"0xFFFFFFFF\",\"0x01B7\",\"0x00000BE8\",\"0xFFFFFFFF\",
+             \"0xFFFFFFFF\",51,14,255,\"0x7FFFFFFF\",\"0x00000000\"
+             +XMCI: 5,000,000,\"0xFFFE\",\"0xFFFFFFFF\",\"0x0108\",\"0x000005B2\",\"0xFFFFFFFF\",
+             \"0xFFFFFFFF\",59,23,255,\"0x7FFFFFFF\",\"0x00000000\"
+OK
+"
+            .to_string()
+        }
+        "AT+XLEC?" => "+XLEC: 0,4,5,5,4,3,BAND_LTE_3,0,7,1,3
+OK
+"
+        .to_string(),
+        "AT+COPS?" => "+COPS: 0,0,\"MegaFon\",7
+OK
+"
+        .to_string(),
+        "AT+CEREG?" => "+CEREG: 2,1
+OK
+"
+        .to_string(),
+        // Всё Qualcomm-специфичное честно отвечает «не поддерживается».
+        _ => "+CME ERROR: 4
+"
+        .to_string(),
     }
 }
 

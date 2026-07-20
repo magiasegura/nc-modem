@@ -71,7 +71,16 @@ function renderLock(l) {
   const parts = [];
   if (l.earfcn !== null) parts.push('несущая EARFCN ' + l.earfcn);
   if (l.pci !== null) parts.push('сектор EARFCN ' + l.pciEarfcn + ' / PCI ' + l.pci);
-  $('lock-state').textContent = parts.length ? 'Зафиксировано: ' + parts.join('; ') : 'Фиксация не установлена';
+
+  let text = parts.length ? 'Зафиксировано: ' + parts.join('; ') : 'Фиксация не установлена';
+  // У Intel прочитать фиксацию из модема нечем — показываем свою запись
+  // и не выдаём её за показание модема.
+  if (l.fromOurRecords) {
+    text += parts.length
+      ? ' — по нашим записям, модем это подтвердить не умеет'
+      : ' (по нашим записям)';
+  }
+  $('lock-state').textContent = text;
   $('lock-conflict').hidden = !l.conflict;
 }
 
@@ -82,8 +91,13 @@ function renderCaps(c) {
   $('scan-hint').textContent = c.neighbors ? 'команда ' + c.neighbors : '';
   $('form-bands').hidden = !c.bandsWritable;
 
-  if (!c.efs) {
-    $('lock-state').textContent = 'Модем не отвечает на at^efs — фиксация недоступна';
+  // Intel фиксирует только пару EARFCN+PCI: параметра «любая сота на несущей»
+  // у freq_lock нет, поэтому форму одной несущей просто прячем.
+  $('form-earfcn').hidden = c.family === 'intel';
+
+  if (c.family === 'unknown') {
+    $('lock-state').textContent =
+      'Семейство модема не определено — фиксация недоступна';
     document.querySelectorAll('#card-lock button, #card-lock input').forEach((el) => {
       if (el.id !== 'btn-reset') el.disabled = true;
     });
@@ -164,7 +178,7 @@ function renderNeighbors(list) {
     const btn = document.createElement('button');
     btn.className = 'small secondary';
     btn.textContent = 'Зафиксировать';
-    btn.disabled = !caps.efs;
+    btn.disabled = caps.family === 'unknown';
     btn.addEventListener('click', () =>
       run(btn, async () => {
         const r = await api('/api/lock/pci', { earfcn: n.earfcn, pci: n.pci });
@@ -183,7 +197,8 @@ function renderNeighbors(list) {
 
 async function refreshStatus() {
   const st = await api('/api/status');
-  $('transport').textContent = st.transport;
+  $('transport').textContent =
+    st.transport + (st.caps.family !== 'unknown' ? ' · ' + st.caps.family : '');
   renderCaps(st.caps);
   renderLock(st.lock);
   renderSignal(st.signal);

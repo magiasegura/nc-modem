@@ -6,6 +6,7 @@
 //! лучше честно скрыть кнопку, чем показать неработающую.
 
 use crate::at::{AtPort, AtResponse, Transport};
+use crate::intel;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -71,11 +72,14 @@ pub struct LockState {
     /// Значение из earfcn_lock.
     pub earfcn: Option<u16>,
     /// Значения из pci_lock.
-    pub pci_earfcn: Option<u16>,
+    pub pci_earfcn: Option<u32>,
     pub pci: Option<u16>,
     /// Сырые байты — для отладки в UI.
     pub raw_earfcn: Option<String>,
     pub raw_pci: Option<String>,
+    /// У Intel фиксацию из модема не прочитать, и показанное — наша запись,
+    /// а не показание модема. UI обязан это различать.
+    pub from_our_records: bool,
 }
 
 impl LockState {
@@ -114,9 +118,33 @@ pub struct Neighbor {
     pub rsrq: Option<f64>,
 }
 
+/// Семейство модема. Определяет способ фиксации — они несовместимы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Family {
+    /// Qualcomm: фиксация записью NV-файлов через `at^efs`.
+    Qualcomm,
+    /// Intel XMM (Fibocom L8x0): фиксация командой `at@sic:freq_lock`.
+    Intel,
+    /// Ни то, ни другое — фиксация недоступна.
+    #[default]
+    Unknown,
+}
+
+impl Family {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Family::Qualcomm => "qualcomm",
+            Family::Intel => "intel",
+            Family::Unknown => "unknown",
+        }
+    }
+}
+
 /// Какие команды подтвердились на конкретной прошивке.
 #[derive(Debug, Clone, Default)]
 pub struct Caps {
+    /// Определённое семейство модема.
+    pub family: Family,
     /// Команда, отдающая метрики служебной соты.
     pub serving: Option<String>,
     /// Команда, отдающая соседей.
@@ -133,12 +161,19 @@ pub struct Caps {
 // Modem
 // ---------------------------------------------------------------------------
 
+/// Сообщение, когда семейство не определилось: команды фиксации у Qualcomm
+/// и Intel несовместимы, и вслепую слать нельзя.
+const NO_FAMILY: &str =
+    "не удалось определить семейство модема: ни at^efs (Qualcomm), ни AT+XCESQ (Intel) не отвечают";
+
 pub struct Modem {
     port: Mutex<AtPort>,
     caps: Mutex<Caps>,
     history: Mutex<VecDeque<Sample>>,
     last_signal: Mutex<Signal>,
     info: Mutex<String>,
+    /// Где помним фиксацию для Intel — прочитать её из модема нечем.
+    state_path: std::path::PathBuf,
 }
 
 /// Кандидаты на метрики служебной соты, в порядке предпочтения.
@@ -149,13 +184,14 @@ const NEIGHBOR_CANDIDATES: &[&str] = &["AT$QCRSRP?", "AT+VZWRSRP?", "AT+GTCCINFO
 const BAND_QUERY_CANDIDATES: &[&str] = &["AT+GTACT?", "AT^BAND_PRI?", "AT^SYSCFGEX?"];
 
 impl Modem {
-    pub fn new(transport: Transport) -> Self {
+    pub fn new(transport: Transport, state_path: impl Into<std::path::PathBuf>) -> Self {
         Modem {
             port: Mutex::new(AtPort::new(transport)),
             caps: Mutex::new(Caps::default()),
             history: Mutex::new(VecDeque::with_capacity(HISTORY_CAP)),
             last_signal: Mutex::new(Signal::default()),
             info: Mutex::new(String::new()),
+            state_path: state_path.into(),
         }
     }
 
@@ -206,6 +242,41 @@ impl Modem {
             caps.efs = r.ok || r.body.to_ascii_uppercase().contains("EFS:");
         }
 
+        // Семейство определяем по тому, что модем реально умеет, а не по ATI:
+        // на L860 ATI отдаёт лишь дату сборки, без модели.
+        if caps.efs {
+            caps.family = Family::Qualcomm;
+        } else if self
+            .send("AT+XCESQ?")
+            .map(|r| r.ok && r.body.contains("+XCESQ:"))
+            .unwrap_or(false)
+        {
+            caps.family = Family::Intel;
+            caps.serving = Some("AT+XMCI=1".to_string());
+            // XMCI отдаёт и служебную соту, и соседей одним ответом.
+            if self
+                .send("AT+XMCI=1")
+                .map(|r| r.ok && r.body.contains("+XMCI:"))
+                .unwrap_or(false)
+            {
+                caps.neighbors = Some("AT+XMCI=1".to_string());
+            } else {
+                // Метрики всё равно возьмём, просто без списка соседей.
+                caps.serving = Some("AT+XCESQ?".to_string());
+            }
+            if self
+                .send("AT+XLEC?")
+                .map(|r| r.ok && r.body.contains("+XLEC:"))
+                .unwrap_or(false)
+            {
+                caps.bands_query = Some("AT+XLEC?".to_string());
+            }
+            if let Ok(mut c) = self.caps.lock() {
+                *c = caps;
+            }
+            return;
+        }
+
         for cmd in SERVING_CANDIDATES {
             if let Ok(r) = self.send(cmd) {
                 if r.ok && !r.body.is_empty() {
@@ -242,6 +313,20 @@ impl Modem {
     // --- фиксация ---
 
     pub fn read_lock(&self) -> Result<LockState, String> {
+        // У Intel прочитать фиксацию из модема нечем: freq_lock только пишет.
+        // Показываем то, что записали сами, и помечаем это в UI.
+        if self.caps().family == Family::Intel {
+            let mut st = LockState {
+                from_our_records: true,
+                ..Default::default()
+            };
+            if let Some((earfcn, pci)) = self.lock_store().load() {
+                st.pci_earfcn = Some(earfcn);
+                st.pci = Some(pci);
+            }
+            return Ok(st);
+        }
+
         let mut st = LockState::default();
 
         let e = self.send(&format!("at^efs=\"{}\"", EFS_EARFCN))?;
@@ -254,7 +339,7 @@ impl Modem {
         if let Some(bytes) = parse_efs_bytes(&p.body) {
             let parts: Vec<&str> = bytes.split(',').collect();
             if parts.len() == 4 {
-                st.pci_earfcn = from_le16(&format!("{},{}", parts[0], parts[1]));
+                st.pci_earfcn = from_le16(&format!("{},{}", parts[0], parts[1])).map(u32::from);
                 st.pci = from_le16(&format!("{},{}", parts[2], parts[3]));
             }
             st.raw_pci = Some(bytes);
@@ -306,34 +391,94 @@ impl Modem {
 
     /// Зафиксировать несущую. pci_lock при этом снимается — иначе конфликт.
     pub fn lock_earfcn(&self, earfcn: u16) -> Result<(), String> {
-        self.write_efs(EFS_EARFCN, &to_le16(earfcn))?;
-        self.write_efs(EFS_PCI, "")?;
-        Ok(())
+        match self.caps().family {
+            Family::Qualcomm => {
+                self.write_efs(EFS_EARFCN, &to_le16(earfcn))?;
+                self.write_efs(EFS_PCI, "")?;
+                Ok(())
+            }
+            // freq_lock требует и PCI: параметра «любой сектор» у него нет.
+            Family::Intel => Err(
+                "модемы Intel не умеют фиксировать одну лишь несущую — укажите ещё и PCI"
+                    .to_string(),
+            ),
+            Family::Unknown => Err(NO_FAMILY.to_string()),
+        }
     }
 
     /// Зафиксировать сектор. earfcn_lock при этом снимается.
-    pub fn lock_pci(&self, earfcn: u16, pci: u16) -> Result<(), String> {
+    pub fn lock_pci(&self, earfcn: u32, pci: u16) -> Result<(), String> {
         if pci > 503 {
             return Err(format!("PCI {} вне диапазона 0..503", pci));
         }
-        let bytes = format!("{},{}", to_le16(earfcn), to_le16(pci));
-        self.write_efs(EFS_PCI, &bytes)?;
-        self.write_efs(EFS_EARFCN, "")?;
-        Ok(())
+        match self.caps().family {
+            Family::Qualcomm => {
+                if earfcn > u16::MAX as u32 {
+                    return Err(format!(
+                        "EARFCN {} > 65535: поле pci_lock всего 2 байта",
+                        earfcn
+                    ));
+                }
+                let bytes = format!("{},{}", to_le16(earfcn as u16), to_le16(pci));
+                self.write_efs(EFS_PCI, &bytes)?;
+                self.write_efs(EFS_EARFCN, "")?;
+                Ok(())
+            }
+            Family::Intel => {
+                let cmd = intel::freq_lock_cmd(earfcn, pci, true)?;
+                self.send(&cmd)?.require_ok()?;
+                self.lock_store().save(earfcn, pci);
+                Ok(())
+            }
+            Family::Unknown => Err(NO_FAMILY.to_string()),
+        }
     }
 
     pub fn unlock(&self) -> Result<(), String> {
-        self.write_efs(EFS_EARFCN, "")?;
-        self.write_efs(EFS_PCI, "")?;
-        Ok(())
+        match self.caps().family {
+            Family::Qualcomm => {
+                self.write_efs(EFS_EARFCN, "")?;
+                self.write_efs(EFS_PCI, "")?;
+                Ok(())
+            }
+            Family::Intel => {
+                // Снимается той же командой с нулём, но нужны те же параметры,
+                // на которых фиксировали, — потому и храним состояние.
+                let (earfcn, pci) = self
+                    .lock_store()
+                    .load()
+                    .ok_or("нет сведений о том, какая фиксация была установлена")?;
+                let cmd = intel::freq_lock_cmd(earfcn, pci, false)?;
+                self.send(&cmd)?.require_ok()?;
+                self.lock_store().clear();
+                Ok(())
+            }
+            Family::Unknown => Err(NO_FAMILY.to_string()),
+        }
+    }
+
+    fn lock_store(&self) -> intel::LockStore {
+        intel::LockStore::new(&self.state_path)
     }
 
     pub fn reset_modem(&self) -> Result<(), String> {
+        let family = self.caps().family;
         let mut port = self
             .port
             .lock()
             .map_err(|_| "AT-порт отравлен".to_string())?;
-        port.send_slow("at+cfun=1,1")?;
+        match family {
+            // У Intel хватает перезапуска радиомодуля: cfun=1,1 на L860
+            // приводит к более долгому пересозданию интерфейса.
+            Family::Intel => {
+                for cmd in intel::RADIO_CYCLE {
+                    port.send_slow(cmd)?;
+                }
+            }
+            _ => {
+                port.send_slow("at+cfun=1,1")?;
+            }
+        }
         Ok(())
     }
 
@@ -342,9 +487,15 @@ impl Modem {
     pub fn poll_signal(&self) -> Signal {
         let cmd = self.caps().serving.unwrap_or_else(|| "AT+CESQ".to_string());
 
+        let family = self.caps().family;
         let mut sig = Signal::default();
         if let Ok(r) = self.send(&cmd) {
-            sig = parse_signal(&r.body);
+            sig = match family {
+                Family::Intel => intel::parse_serving(&r.body)
+                    .or_else(|| intel::parse_xcesq(&r.body))
+                    .unwrap_or_default(),
+                _ => parse_signal(&r.body),
+            };
         }
 
         // Оператор и факт регистрации — стандартные команды, есть почти везде.
@@ -397,7 +548,10 @@ impl Modem {
             .map_err(|_| "AT-порт отравлен".to_string())?;
         let r = port.send_slow(&cmd)?;
         drop(port);
-        Ok(parse_neighbors(&r.body))
+        Ok(match self.caps().family {
+            Family::Intel => intel::parse_neighbors(&r.body),
+            _ => parse_neighbors(&r.body),
+        })
     }
 
     pub fn read_bands(&self) -> Result<String, String> {
@@ -406,6 +560,11 @@ impl Modem {
             .bands_query
             .ok_or_else(|| "прошивка модема не поддерживает управление бэндами".to_string())?;
         let r = self.send(&cmd)?;
+        if self.caps().family == Family::Intel {
+            // +XLEC описывает состав агрегации; формат зависит от прошивки,
+            // поэтому показываем строку как есть, без выдуманного разбора.
+            return Ok(intel::parse_xlec(&r.body).unwrap_or(r.body));
+        }
         Ok(r.body)
     }
 
