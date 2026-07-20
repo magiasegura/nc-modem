@@ -174,12 +174,75 @@ pub fn parse_xcesq(body: &str) -> Option<Signal> {
     })
 }
 
-/// `+XLEC: …,BAND_LTE_3,…` — состав агрегации. Отдаём как есть: формат
-/// зависит от прошивки, и разбирать его по догадке смысла нет.
+/// `+XLEC: …,BAND_LTE_3,…` — сырая строка состава агрегации.
 pub fn parse_xlec(body: &str) -> Option<String> {
     body.lines()
         .find(|l| l.contains("+XLEC:"))
         .map(|l| l.trim().to_string())
+}
+
+/// Разобранный состав агрегации.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Aggregation {
+    /// Сколько несущих агрегировано.
+    pub carriers: usize,
+    /// Ширина полосы каждой несущей, МГц.
+    pub bandwidths: Vec<f64>,
+    /// Названные диапазоны, например `B3`.
+    pub bands: Vec<String>,
+    /// Суммарная полоса, МГц.
+    pub total_mhz: f64,
+}
+
+/// Коды ширины полосы LTE (число ресурсных блоков), 3GPP TS 36.101.
+fn bandwidth_mhz(code: u32) -> Option<f64> {
+    match code {
+        0 => Some(1.4),
+        1 => Some(3.0),
+        2 => Some(5.0),
+        3 => Some(10.0),
+        4 => Some(15.0),
+        5 => Some(20.0),
+        _ => None,
+    }
+}
+
+/// Разбор `+XLEC: <?>,<кол-во>,<полоса1>,…,<полосаN>,BAND_LTE_x,…`
+///
+/// Полный формат в документации Fibocom не описан, поэтому разбираем только
+/// то, что подтверждается реальными ответами: число несущих, их полосы и
+/// названные диапазоны. Всё остальное остаётся в сырой строке рядом.
+pub fn parse_aggregation(body: &str) -> Option<Aggregation> {
+    let line = parse_xlec(body)?;
+    let rest = line.split_once(':')?.1;
+    let parts: Vec<&str> = rest.split(',').map(|p| p.trim()).collect();
+
+    let carriers = parts.get(1)?.parse::<usize>().ok()?;
+    // Защита от неверной догадки о формате: неправдоподобное число несущих
+    // или нехватка полей — значит разбирать нечего, отдадим только сырую строку.
+    if !(1..=8).contains(&carriers) || parts.len() < 2 + carriers {
+        return None;
+    }
+
+    let bandwidths: Vec<f64> = parts[2..2 + carriers]
+        .iter()
+        .filter_map(|p| p.parse::<u32>().ok().and_then(bandwidth_mhz))
+        .collect();
+    if bandwidths.len() != carriers {
+        return None;
+    }
+
+    let bands: Vec<String> = parts
+        .iter()
+        .filter_map(|p| p.strip_prefix("BAND_LTE_").map(|n| format!("B{}", n)))
+        .collect();
+
+    Some(Aggregation {
+        carriers,
+        total_mhz: bandwidths.iter().sum(),
+        bandwidths,
+        bands,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +367,41 @@ mod tests {
     #[test]
     fn refuses_earfcn_outside_known_bands() {
         assert!(freq_lock_cmd(20000, 1, true).is_err());
+    }
+
+    #[test]
+    fn parses_aggregation_from_real_xlec() {
+        // Дословный ответ L860 (со скриншота пользователя).
+        let a = parse_aggregation("+XLEC: 0,4,5,5,4,3,BAND_LTE_3,0,0,0,0").unwrap();
+        assert_eq!(a.carriers, 4);
+        assert_eq!(a.bandwidths, vec![20.0, 20.0, 15.0, 10.0]);
+        assert_eq!(a.total_mhz, 65.0);
+        assert_eq!(a.bands, vec!["B3"]);
+    }
+
+    #[test]
+    fn parses_aggregation_second_sample() {
+        let a = parse_aggregation("+XLEC: 0,4,5,5,4,3,BAND_LTE_3,0,7,1,3").unwrap();
+        assert_eq!(a.carriers, 4);
+        assert_eq!(a.total_mhz, 65.0);
+    }
+
+    #[test]
+    fn aggregation_refuses_implausible_shapes() {
+        // Догадка о формате не подтвердилась — лучше отдать сырую строку,
+        // чем показать выдуманные цифры.
+        assert!(parse_aggregation("+XLEC: 0,99,5,5").is_none());
+        assert!(parse_aggregation("+XLEC: 0,4,5").is_none());
+        assert!(parse_aggregation("+XLEC: 0,2,9,9").is_none());
+        assert!(parse_aggregation("OK").is_none());
+    }
+
+    #[test]
+    fn single_carrier_aggregation() {
+        let a = parse_aggregation("+XLEC: 0,1,5,BAND_LTE_7").unwrap();
+        assert_eq!(a.carriers, 1);
+        assert_eq!(a.total_mhz, 20.0);
+        assert_eq!(a.bands, vec!["B7"]);
     }
 
     #[test]

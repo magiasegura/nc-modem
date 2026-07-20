@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Модем — расширенные функции</title>
+<title>Модем — приборная панель</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <header>
   <h1>Модем</h1>
-  <div class="meta">
-    <span id="operator">—</span>
-    <span id="reg" class="badge">—</span>
-    <span id="transport" class="mono dim"></span>
+  <span id="operator">—</span>
+  <span id="reg" class="badge">проверяю связь</span>
+  <div class="head-meta">
+    <span id="cell">—</span>
+    <span id="transport"></span>
   </div>
 </header>
 
@@ -21,81 +22,109 @@
 
 <main>
 
-  <section class="card" id="card-signal">
+  <section class="card">
     <h2>Сигнал</h2>
-    <div class="metrics">
-      <div class="metric"><span class="label">RSRP</span><span class="value" id="m-rsrp">—</span><span class="unit">дБм</span></div>
-      <div class="metric"><span class="label">RSRQ</span><span class="value" id="m-rsrq">—</span><span class="unit">дБ</span></div>
-      <div class="metric"><span class="label">SINR</span><span class="value" id="m-sinr">—</span><span class="unit">дБ</span></div>
-      <div class="metric"><span class="label">EARFCN</span><span class="value" id="m-earfcn">—</span><span class="unit"></span></div>
-      <div class="metric"><span class="label">PCI</span><span class="value" id="m-pci">—</span><span class="unit"></span></div>
+
+    <div class="readouts">
+      <div class="readout"><span class="k">RSRP</span><span class="v" id="m-rsrp">—</span><span class="u">дБм</span></div>
+      <div class="readout"><span class="k">RSRQ</span><span class="v" id="m-rsrq">—</span><span class="u">дБ</span></div>
+      <div class="readout"><span class="k">SINR</span><span class="v" id="m-sinr">—</span><span class="u">по шкале модема</span></div>
     </div>
-    <canvas id="chart" height="160" aria-label="График RSRP и SINR за последний час"></canvas>
-    <p class="legend"><span class="key key-rsrp"></span>RSRP <span class="key key-sinr"></span>SINR</p>
+
+    <!-- Шкала: число «−83 дБм» само по себе ни о чём не говорит. -->
+    <div class="gauge">
+      <div class="gauge-track"><div class="gauge-mark" id="gauge-mark" style="left:0"></div></div>
+      <div class="gauge-scale"><span>−120</span><span>−105</span><span>−90</span><span>−75</span><span>−60</span></div>
+      <div class="gauge-verdict" id="gauge-verdict">Жду первого замера</div>
+    </div>
+
+    <div class="plots">
+      <!-- Две отдельные шкалы: у RSRP дБм, у SINR своя шкала модема.
+           Совмещать их на одной оси нельзя — одна линия станет плоской. -->
+      <div>
+        <div class="plot-head">
+          <span class="plot-title">RSRP, дБм · за час</span>
+          <span class="plot-now" id="plot-now-rsrp"></span>
+        </div>
+        <div class="plot"><canvas id="chart-rsrp" height="88"></canvas></div>
+      </div>
+      <div>
+        <div class="plot-head">
+          <span class="plot-title">SINR · за час</span>
+          <span class="plot-now" id="plot-now-sinr"></span>
+        </div>
+        <div class="plot"><canvas id="chart-sinr" height="88"></canvas></div>
+      </div>
+    </div>
   </section>
 
   <section class="card" id="card-lock">
     <h2>Фиксация соты</h2>
-    <div id="lock-state" class="state">—</div>
-    <p class="warn" id="lock-conflict" hidden>
-      Установлены обе фиксации сразу — в модеме конфликт приоритетов. Оставьте что-то одно.
-    </p>
+
+    <div class="state" id="lock-state">—</div>
+    <div class="state-note" id="lock-note" hidden></div>
 
     <form id="form-earfcn" class="row">
-      <label>EARFCN <input type="number" name="earfcn" min="0" max="65535" required></label>
+      <label class="grow">EARFCN <input type="number" name="earfcn" min="0" max="262143" required></label>
       <button type="submit">Зафиксировать несущую</button>
     </form>
 
     <form id="form-pci" class="row">
-      <label>EARFCN <input type="number" name="earfcn" min="0" max="65535" required></label>
-      <label>PCI <input type="number" name="pci" min="0" max="503" required></label>
-      <button type="submit">Зафиксировать сектор</button>
+      <label class="grow">EARFCN <input type="number" name="earfcn" min="0" max="262143" required></label>
+      <label class="grow">PCI <input type="number" name="pci" min="0" max="503" required></label>
+      <button type="submit" class="primary">Зафиксировать соту</button>
     </form>
 
     <div class="row">
-      <button id="btn-unlock" class="secondary">Снять фиксацию</button>
-      <button id="btn-reset" class="danger">Перезагрузить модем</button>
+      <button id="btn-unlock" class="quiet">Снять фиксацию</button>
+      <button id="btn-reset" class="quiet">Перезапустить радио</button>
     </div>
 
-    <p class="note">
-      Фиксация несущей и фиксация сектора взаимоисключающие: включение одной снимает другую.
-      Изменения применяются только после перезагрузки модема.
-      Если зафиксированного сектора нет в эфире, модем потеряет регистрацию — спасает «Снять фиксацию».
-    </p>
+    <p class="note" id="lock-help"></p>
   </section>
 
   <section class="card" id="card-scan">
     <h2>Соседние соты</h2>
     <div class="row">
-      <button id="btn-scan">Сканировать</button>
-      <span class="dim" id="scan-hint"></span>
+      <button id="btn-scan" class="primary">Сканировать</button>
+      <span class="note mono" id="scan-hint" style="margin:0"></span>
     </div>
-    <table id="neighbors" hidden>
-      <thead><tr><th>EARFCN</th><th>PCI</th><th>RSRP</th><th>RSRQ</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="scroll-x">
+      <table id="neighbors" hidden>
+        <thead><tr><th>EARFCN</th><th>Band</th><th>PCI</th><th>RSRP</th><th>RSRQ</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="empty" id="scan-empty">Нажмите «Сканировать», чтобы увидеть, какие соты слышит модем.</p>
   </section>
 
   <section class="card" id="card-bands">
-    <h2>Бэнды</h2>
-    <pre id="bands-raw" class="mono out">—</pre>
-    <form id="form-bands" class="row">
-      <label>Маска (hex) <input type="text" name="mask" pattern="[0-9A-Fa-f]+" placeholder="например 8000084"></label>
-      <button type="submit">Записать</button>
+    <h2>Агрегация</h2>
+    <ul class="facts" id="agg-facts" hidden>
+      <li><span class="k">Несущих</span><span class="v" id="agg-carriers">—</span></li>
+      <li><span class="k">Суммарная полоса</span><span class="v" id="agg-total">—</span></li>
+      <li><span class="k">Диапазоны</span><span class="v" id="agg-bands">—</span></li>
+    </ul>
+    <div class="facts" id="agg-widths-wrap" hidden>
+      <span class="k" style="width:100%">Полосы несущих</span>
+      <span class="v mono" id="agg-widths"></span>
+    </div>
+    <pre class="out" id="bands-raw">—</pre>
+    <form id="form-bands" class="row" hidden>
+      <label class="grow">Маска диапазонов, hex <input type="text" name="mask" pattern="[0-9A-Fa-f]+" placeholder="8000084"></label>
+      <button type="submit">Записать маску</button>
     </form>
-    <p class="note">Формат маски зависит от прошивки модема. Неверная маска может лишить модем связи.</p>
+    <p class="note" id="bands-note"></p>
   </section>
 
-  <section class="card" id="card-at">
+  <section class="card wide">
     <h2>AT-консоль</h2>
     <form id="form-at" class="row">
-      <label class="grow">Команда <input type="text" name="cmd" class="mono" placeholder="ATI" required></label>
+      <label class="grow">Команда <input type="text" name="cmd" placeholder="ATI" required autocomplete="off"></label>
       <button type="submit">Отправить</button>
     </form>
-    <pre id="at-out" class="mono out">—</pre>
-    <p class="note danger-text">
-      Команда <code>at^efs</code> пишет в NV-память модема напрямую и может его окирпичить. На свой страх и риск.
-    </p>
+    <pre class="out" id="at-out">Ответ модема появится здесь.</pre>
+    <p class="note alarm" id="at-warn"></p>
   </section>
 
 </main>

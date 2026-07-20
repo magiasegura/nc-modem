@@ -561,11 +561,20 @@ impl Modem {
             .ok_or_else(|| "прошивка модема не поддерживает управление бэндами".to_string())?;
         let r = self.send(&cmd)?;
         if self.caps().family == Family::Intel {
-            // +XLEC описывает состав агрегации; формат зависит от прошивки,
-            // поэтому показываем строку как есть, без выдуманного разбора.
             return Ok(intel::parse_xlec(&r.body).unwrap_or(r.body));
         }
         Ok(r.body)
+    }
+
+    /// Разобранный состав агрегации — только для Intel и только если формат
+    /// ответа подтвердился. Иначе `None`, и UI покажет одну сырую строку.
+    pub fn read_aggregation(&self) -> Option<intel::Aggregation> {
+        if self.caps().family != Family::Intel {
+            return None;
+        }
+        let cmd = self.caps().bands_query?;
+        let r = self.send(&cmd).ok()?;
+        intel::parse_aggregation(&r.body)
     }
 
     pub fn set_bands(&self, mask: &str) -> Result<(), String> {

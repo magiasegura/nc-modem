@@ -452,7 +452,38 @@ pub fn detect(pref_iface: Option<&str>, pref_dev: Option<&str>) -> Option<Transp
 // Разбор ответа
 // ---------------------------------------------------------------------------
 
+/// Выбросить ANSI-escape последовательности.
+///
+/// `ndmc` подмешивает в вывод управляющие коды вроде `ESC[K` («стереть строку»).
+/// Они невидимы в терминале, но ломают разбор: `strip_prefix("+CEREG:")` на
+/// строке `ESC[K+CEREG: 0,1` не срабатывает, и модем выглядит незарегистрированным.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // CSI: ESC [ ... <финальный байт 0x40..0x7E>
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for f in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&f) {
+                    break;
+                }
+            }
+        } else {
+            // Прочие двухсимвольные escape — глотаем следующий символ.
+            chars.next();
+        }
+    }
+    out
+}
+
 fn parse_response(cmd: &str, raw: &str) -> AtResponse {
+    let raw = &strip_ansi(raw);
     let cleaned = raw.replace('\r', "\n");
     let mut body_lines: Vec<&str> = Vec::new();
     let mut ok = false;
@@ -484,7 +515,7 @@ fn parse_response(cmd: &str, raw: &str) -> AtResponse {
 
     AtResponse {
         body: body_lines.join("\n"),
-        raw: raw.to_string(),
+        raw: raw.clone(),
         ok,
         error,
     }
@@ -503,6 +534,35 @@ mod tests {
         assert!(r.ok);
         assert_eq!(r.body, "^EFS: /nv/x, 22,0b");
         assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn strips_ansi_escapes_from_ndmc_output() {
+        // Реальный вывод ndmc: перед ответом идёт ESC[K.
+        let r = parse_response("AT+CEREG?", "\u{1b}[K+CEREG: 0,1\r\nOK\r\n");
+        assert!(r.ok);
+        assert_eq!(r.body, "+CEREG: 0,1");
+        assert!(!r.raw.contains('\u{1b}'));
+        // Именно это ломало определение регистрации.
+        assert!(parse_registered_probe(&r.body));
+    }
+
+    #[test]
+    fn strip_ansi_keeps_payload() {
+        assert_eq!(strip_ansi("\u{1b}[K+XLEC: 0,4"), "+XLEC: 0,4");
+        assert_eq!(strip_ansi("\u{1b}[2J\u{1b}[1;31mtext\u{1b}[0m"), "text");
+        assert_eq!(strip_ansi("no escapes"), "no escapes");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    /// Тот же приём разбора, что и в modem::parse_registered.
+    fn parse_registered_probe(body: &str) -> bool {
+        body.lines().any(|l| {
+            l.trim()
+                .to_ascii_uppercase()
+                .strip_prefix("+CEREG:")
+                .is_some()
+        })
     }
 
     #[test]

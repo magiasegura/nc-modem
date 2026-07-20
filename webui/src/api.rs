@@ -18,7 +18,10 @@ pub fn route(modem: &Arc<Modem>, req: &Request) -> Response {
         ("GET", "/api/status") => ok(status_json(modem)),
         ("GET", "/api/history") => ok(history_json(&modem.history())),
         ("GET", "/api/bands") => match modem.read_bands() {
-            Ok(raw) => ok(Json::obj(vec![("raw", Json::str(raw))])),
+            Ok(raw) => ok(Json::obj(vec![
+                ("raw", Json::str(raw)),
+                ("aggregation", aggregation_json(modem)),
+            ])),
             Err(e) => err(400, &e),
         },
 
@@ -187,6 +190,26 @@ fn neighbors_json(list: &[Neighbor]) -> Json {
             })
             .collect(),
     )
+}
+
+/// Состав агрегации в понятном виде. `null`, если формат ответа не подтвердился —
+/// тогда UI показывает только сырую строку, а не выдуманные числа.
+fn aggregation_json(modem: &Arc<Modem>) -> Json {
+    match modem.read_aggregation() {
+        None => Json::Null,
+        Some(a) => Json::obj(vec![
+            ("carriers", Json::Int(a.carriers as i64)),
+            ("totalMhz", Json::Num(a.total_mhz)),
+            (
+                "bandwidths",
+                Json::Arr(a.bandwidths.iter().map(|v| Json::Num(*v)).collect()),
+            ),
+            (
+                "bands",
+                Json::Arr(a.bands.iter().map(|b| Json::str(b.clone())).collect()),
+            ),
+        ]),
+    }
 }
 
 fn history_json(samples: &[Sample]) -> Json {

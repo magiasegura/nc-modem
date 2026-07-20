@@ -1,30 +1,57 @@
+/*
+ * Приборная панель радиомодема.
+ *
+ * Направление: измерительный прибор, а не «дашборд». Отсюда три решения.
+ *
+ * 1. Веб-шрифтов нет и быть не может: страница отдаётся с роутера без
+ *    интернета. Характер строится на числах — крупные табличные моноширинные
+ *    цифры против мелких разрядок-подписей.
+ * 2. Цвет зарезервирован. Насыщенный тон в интерфейсе означает измерение:
+ *    синий — RSRP, оранжевый — SINR. Кнопки, рамки и фон нейтральны, поэтому
+ *    взгляд сразу идёт на данные. Пара тонов проверена валидатором палитры:
+ *    все проверки, включая различимость при дальтонизме, пройдены в обеих темах.
+ * 3. Качество сигнала — величина порядковая, поэтому кодируется положением
+ *    на шкале дБм и насыщенностью одного тона, а не светофором из трёх цветов
+ *    (зелёный/жёлтый/красный неразличимы при дейтеранопии — проверено).
+ */
+
 :root {
-  --bg: #f4f5f7;
-  --card: #fff;
-  --fg: #1c1f23;
-  --dim: #6b7280;
-  --line: #e2e5ea;
-  --accent: #2563eb;
-  --ok: #15803d;
-  --warn: #b45309;
-  --danger: #b91c1c;
-  --rsrp: #2563eb;
-  --sinr: #ea580c;
+  color-scheme: dark light;
+
+  --bg: #0e1216;
+  --panel: #151b21;
+  --panel-2: #1b232a;
+  --line: #26313a;
+  --line-soft: #1e262d;
+
+  --ink: #e8edf2;
+  --ink-2: #9fb0bf;
+  --ink-3: #6c7f8e;
+
+  --rsrp: #4e8fdc;
+  --sinr: #ce762b;
+  --alarm: #e06a6a;
+
+  --r: 4px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #14171a;
-    --card: #1c2024;
-    --fg: #e7e9ec;
-    --dim: #98a1ad;
-    --line: #2b3138;
-    --accent: #60a5fa;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --danger: #f87171;
-    --rsrp: #60a5fa;
-    --sinr: #fb923c;
+    --bg: #eef1f4;
+    --panel: #ffffff;
+    --panel-2: #f4f6f8;
+    --line: #d3dae0;
+    --line-soft: #e4e9ed;
+
+    --ink: #16202a;
+    --ink-2: #4a5c6b;
+    --ink-3: #7b8c99;
+
+    --rsrp: #2c6fbf;
+    --sinr: #a85a14;
+    --alarm: #b23b3b;
   }
 }
 
@@ -32,138 +59,378 @@
 
 body {
   margin: 0;
-  padding: 0 0 3rem;
+  padding: 0 0 4rem;
   background: var(--bg);
-  color: var(--fg);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  font: 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
+
+/* --- шапка ---------------------------------------------------------- */
 
 header {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: .75rem 1rem;
-  padding: 1rem 1.25rem;
+  gap: .6rem 1.4rem;
+  padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--line);
-  background: var(--card);
+  background: var(--panel);
 }
 
-header h1 { margin: 0; font-size: 1.15rem; }
-header .meta { display: flex; flex-wrap: wrap; gap: .5rem .9rem; align-items: baseline; }
+header h1 {
+  margin: 0;
+  font-size: .78rem;
+  font-weight: 600;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+#operator { font-weight: 600; font-size: .95rem; }
+
+.head-meta {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .45rem .9rem;
+  font-family: var(--mono);
+  font-size: .72rem;
+  color: var(--ink-3);
+}
+
+/* Состояние регистрации: слово несёт смысл, точка лишь дублирует. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .04em;
+  color: var(--ink-2);
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge.on { color: var(--rsrp); }
+.badge.off { color: var(--alarm); }
+
+/* --- сетка ---------------------------------------------------------- */
 
 main {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-  gap: 1rem;
-  padding: 1rem 1.25rem;
-  max-width: 1400px;
-  margin: 0 auto;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  align-items: start;
+  gap: 1px;
+  background: var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1rem 1.1rem 1.1rem;
+  background: var(--panel);
+  padding: 1.15rem 1.35rem 1.4rem;
   min-width: 0;
 }
 
-.card h2 { margin: 0 0 .85rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.card > h2 {
+  margin: 0 0 1rem;
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .17em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
 
-.metrics { display: flex; flex-wrap: wrap; gap: 1.25rem; margin-bottom: 1rem; }
-.metric { display: flex; flex-direction: column; }
-.metric .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
-.metric .value { font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.2; }
-.metric .unit { font-size: .7rem; color: var(--dim); }
+.card.wide { grid-column: 1 / -1; }
 
-canvas { width: 100%; display: block; }
+/* --- показания ------------------------------------------------------ */
 
-.legend { margin: .5rem 0 0; font-size: .75rem; color: var(--dim); display: flex; align-items: center; gap: .4rem; }
-.key { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
-.key-rsrp { background: var(--rsrp); }
-.key-sinr { background: var(--sinr); margin-left: .8rem; }
+.readouts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 1rem .5rem;
+  margin-bottom: 1.3rem;
+}
 
-.state { font-size: 1rem; margin-bottom: .85rem; }
+.readout { display: flex; flex-direction: column; gap: .1rem; }
 
-.row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin-bottom: .7rem; }
-.row .grow { flex: 1 1 200px; }
+.readout .k {
+  font-size: .63rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
 
-label { display: flex; flex-direction: column; gap: .25rem; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+.readout .v {
+  font-family: var(--mono);
+  font-size: 1.65rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  letter-spacing: -.02em;
+}
+
+.readout .u { font-size: .63rem; color: var(--ink-3); }
+
+/*
+ * Шкала RSRP — то, ради чего эту панель открывают. Числу −83 дБм само по себе
+ * ничего не говорит; линейка показывает, где вы между «не работает» и «отлично».
+ */
+.gauge { margin-bottom: 1.4rem; }
+
+.gauge-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--rsrp) 12%, transparent),
+    var(--rsrp)
+  );
+}
+
+.gauge-mark {
+  position: absolute;
+  top: -4px;
+  width: 2px;
+  height: 14px;
+  background: var(--ink);
+  transform: translateX(-1px);
+  transition: left .4s ease;
+}
+
+.gauge-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: .35rem;
+  font-family: var(--mono);
+  font-size: .62rem;
+  color: var(--ink-3);
+}
+
+.gauge-verdict {
+  margin-top: .5rem;
+  font-size: .78rem;
+  color: var(--ink-2);
+}
+
+/* --- графики -------------------------------------------------------- */
+
+.plots { display: grid; gap: 1.1rem; }
+
+.plot-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .3rem;
+}
+
+.plot-title {
+  font-size: .68rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.plot-now {
+  font-family: var(--mono);
+  font-size: .72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+.plot { position: relative; }
+canvas { width: 100%; display: block; cursor: crosshair; }
+
+.tip {
+  position: absolute;
+  pointer-events: none;
+  padding: .3rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: .7rem;
+  white-space: nowrap;
+  transform: translate(-50%, -130%);
+  z-index: 3;
+}
+
+.empty {
+  padding: 1.2rem 0;
+  font-size: .8rem;
+  color: var(--ink-3);
+}
+
+/* --- формы ---------------------------------------------------------- */
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem;
+  align-items: flex-end;
+  margin-bottom: .8rem;
+}
+
+.row .grow { flex: 1 1 180px; }
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  font-size: .63rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
 
 input {
   font: inherit;
-  padding: .4rem .55rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  min-width: 0;
+  font-family: var(--mono);
+  padding: .42rem .55rem;
   width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  color: var(--ink);
 }
 
-input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input::placeholder { color: var(--ink-3); }
+input:focus-visible,
+button:focus-visible { outline: 2px solid var(--rsrp); outline-offset: 1px; }
 
+/* Кнопки намеренно нейтральны: цвет в этом интерфейсе означает измерение. */
 button {
   font: inherit;
-  padding: .42rem .8rem;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
+  font-size: .82rem;
+  padding: .45rem .85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--panel-2);
+  color: var(--ink);
   cursor: pointer;
   white-space: nowrap;
 }
 
-button:hover { filter: brightness(1.08); }
-button:disabled { opacity: .55; cursor: default; filter: none; }
-button.secondary { background: transparent; border-color: var(--line); color: var(--fg); }
-button.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
-button.small { padding: .2rem .5rem; font-size: .8rem; }
+button:hover:not(:disabled) { border-color: var(--ink-3); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { border-color: var(--ink-3); font-weight: 600; }
+button.quiet { background: none; color: var(--ink-2); }
+button.small { padding: .2rem .5rem; font-size: .72rem; }
 
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { text-align: right; padding: .35rem .5rem; border-bottom: 1px solid var(--line); }
-th:first-child, td:first-child { text-align: left; }
-th { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); font-weight: 500; }
-td:last-child, th:last-child { text-align: right; width: 1%; }
+/* --- таблица -------------------------------------------------------- */
 
-.out {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: .6rem .7rem;
-  margin: 0 0 .7rem;
-  max-height: 260px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: .82rem;
+.scroll-x { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
 }
 
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.dim { color: var(--dim); font-size: .8rem; }
-.note { margin: .6rem 0 0; font-size: .78rem; color: var(--dim); }
-.warn { margin: 0 0 .8rem; font-size: .82rem; color: var(--warn); }
-.danger-text { color: var(--danger); }
+th, td {
+  text-align: right;
+  padding: .4rem .55rem;
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
 
-.badge { font-size: .72rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
-.badge.on { color: var(--ok); border-color: currentColor; }
-.badge.off { color: var(--danger); border-color: currentColor; }
+th:first-child, td:first-child { text-align: left; }
+th:last-child, td:last-child { width: 1%; }
+
+th {
+  font-size: .62rem;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+td { font-family: var(--mono); font-size: .82rem; }
+td.txt { font-family: var(--sans); }
+tr.is-serving td { color: var(--rsrp); }
+
+/* --- прочее --------------------------------------------------------- */
+
+.state {
+  font-size: .95rem;
+  margin-bottom: .3rem;
+}
+
+.state-note {
+  font-size: .73rem;
+  color: var(--ink-3);
+  margin-bottom: 1rem;
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem 1.4rem;
+  margin: 0 0 .9rem;
+  padding: 0;
+  list-style: none;
+}
+
+.facts li { display: flex; flex-direction: column; }
+.facts .k { font-size: .62rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.facts .v { font-family: var(--mono); font-size: 1rem; font-variant-numeric: tabular-nums; }
+
+.out {
+  margin: 0 0 .8rem;
+  padding: .6rem .7rem;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: .76rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-2);
+}
+
+.note { margin: .7rem 0 0; font-size: .74rem; color: var(--ink-3); }
+.note.alarm { color: var(--alarm); }
+.mono { font-family: var(--mono); }
 
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 1.25rem;
+  bottom: 1.5rem;
   transform: translateX(-50%);
-  max-width: min(90vw, 560px);
+  max-width: min(92vw, 560px);
   padding: .6rem .9rem;
-  border-radius: 8px;
-  background: var(--card);
   border: 1px solid var(--line);
-  box-shadow: 0 6px 24px rgb(0 0 0 / .18);
-  font-size: .85rem;
+  border-left-width: 3px;
+  border-radius: var(--r);
+  background: var(--panel-2);
+  font-size: .82rem;
+  box-shadow: 0 8px 30px rgb(0 0 0 / .35);
   z-index: 10;
 }
-.toast.error { border-color: var(--danger); color: var(--danger); }
-.toast.ok { border-color: var(--ok); }
 
-.card[hidden], [hidden] { display: none !important; }
+.toast.error { border-left-color: var(--alarm); }
+.toast.ok { border-left-color: var(--rsrp); }
+
+[hidden] { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+@media (max-width: 560px) {
+  header { padding: .85rem 1rem; }
+  .head-meta { margin-left: 0; width: 100%; }
+  .card { padding: 1rem; }
+  .readout .v { font-size: 1.4rem; }
+}
