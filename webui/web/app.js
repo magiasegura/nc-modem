@@ -250,6 +250,10 @@ function drawPlot(canvasId, key, color, unit, minSpan) {
 
   canvas.width = w * dpr;
   canvas.height = h * dpr;
+  // Битмап держим в физических пикселях, а высоту в вёрстке задаём явно: без
+  // неё элемент занимает h * dpr экранных пикселей, и на HiDPI график выходит
+  // вдвое выше задуманного, а подсказка (top в логических координатах) уезжает.
+  canvas.style.height = h + 'px';
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
@@ -316,11 +320,13 @@ function drawPlot(canvasId, key, color, unit, minSpan) {
   ctx.stroke();
 
   // Подписи ставим внутрь холста: max над своей линией, min под своей.
+  // Сдвиги подобраны под pad: подпись в 10px требует 10px отступа, иначе
+  // ограничитель срабатывает и затягивает её обратно на линию данных.
   ctx.fillStyle = css.getPropertyValue('--ink-3').trim();
   ctx.font = '10px ui-monospace, monospace';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText(max.toFixed(0), 2, Math.max(10, y(max) - 4));
-  ctx.fillText(min.toFixed(0), 2, Math.min(h - 3, y(min) + 12));
+  ctx.fillText(max.toFixed(0), 2, Math.max(9, y(max) - 3));
+  ctx.fillText(min.toFixed(0), 2, Math.min(h - 2, y(min) + 10));
 
   canvas._geom = { pts, x, y, min, max, w, h, unit, color };
 }

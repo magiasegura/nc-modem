@@ -489,15 +489,20 @@ fn strip_ansi(s: &str) -> String {
 /// и человека, который смотрит в AT-консоль.
 fn is_ndmc_noise(line: &str) -> bool {
     let t = line.trim();
+    // Подтверждение доставки команды интерфейсу.
     t.starts_with("Mobile::Interface:")
-        || t.contains("ndm: Cli::")
-        || t.contains("Cli::Main:")
-        || (t.starts_with('[') && t.contains("] ndm:"))
+        // Запись журнала роутера: «[C] Jul 20 20:59:20 ndm: Cli::Main: ...».
+        // Метка уровня и метка демона проверяются вместе: по одному лишь
+        // «ndm: » под фильтр попал бы и ответ модема с такой подстрокой.
+        || (t.starts_with('[') && t.contains(" ndm: "))
 }
 
 fn parse_response(cmd: &str, raw: &str) -> AtResponse {
-    let raw = &strip_ansi(raw);
-    let cleaned = raw.replace('\r', "\n");
+    // Переводы строк нормализуем один раз, до всякого разбора: ndmc шлёт и
+    // `\r\n`, и одиночные `\r`. Если тело и сырой ответ резать на строки
+    // по-разному, фильтр шума на одном из них промахнётся — или, что хуже,
+    // срежет вместе с шумом прилипший к нему ответ модема.
+    let cleaned = strip_ansi(raw).replace("\r\n", "\n").replace('\r', "\n");
     let mut body_lines: Vec<&str> = Vec::new();
     let mut ok = false;
     let mut error = None;
@@ -530,7 +535,7 @@ fn parse_response(cmd: &str, raw: &str) -> AtResponse {
     }
 
     // Сырой ответ показывает AT-консоль, поэтому болтовню ndmc убираем и из него.
-    let clean_raw: Vec<&str> = raw.lines().filter(|l| !is_ndmc_noise(l)).collect();
+    let clean_raw: Vec<&str> = cleaned.lines().filter(|l| !is_ndmc_noise(l)).collect();
 
     AtResponse {
         body: body_lines.join("\n"),
@@ -594,6 +599,19 @@ mod tests {
         assert_eq!(r.body, "\".Built@Jun-17-2022:06:30:44\"");
         assert!(!r.raw.contains("Cli::Main"));
         assert!(!r.raw.contains("Mobile::Interface"));
+    }
+
+    #[test]
+    fn filters_ndmc_chatter_glued_by_bare_cr() {
+        // ndmc разделяет строки и одиночным \r. Раньше сырой ответ резался по
+        // \n, шум с ответом склеивался в одну строку — и фильтр выбрасывал их
+        // вместе, унося из AT-консоли настоящий ответ модема.
+        let raw = "+CEREG: 0,1\r[C] Jul 20 20:59:20 ndm: Cli::Main: system failed\rOK\r";
+        let r = parse_response("AT+CEREG?", raw);
+        assert!(r.ok);
+        assert_eq!(r.body, "+CEREG: 0,1");
+        assert!(r.raw.contains("+CEREG: 0,1"));
+        assert!(!r.raw.contains("Cli::Main"));
     }
 
     #[test]
