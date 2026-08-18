@@ -11,6 +11,7 @@ mod http;
 mod intel;
 mod json;
 mod modem;
+mod simcom;
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -30,7 +31,8 @@ struct Config {
     pass: Option<String>,
     demo: bool,
     demo_intel: bool,
-    /// Где хранить состояние фиксации для модемов Intel.
+    demo_a7908: bool,
+    /// Где хранить состояние фиксации для модемов Intel и SIMCom.
     state: String,
 }
 
@@ -44,6 +46,7 @@ impl Default for Config {
             pass: None,
             demo: false,
             demo_intel: false,
+            demo_a7908: false,
             state: DEFAULT_STATE.to_string(),
         }
     }
@@ -63,6 +66,7 @@ fn usage() -> String {
       --state <path>        файл состояния фиксации для Intel (по умолчанию {})
       --demo                фиктивный модем Qualcomm: посмотреть интерфейс без железа
       --demo-intel          фиктивный модем Intel XMM (Fibocom L8x0)
+      --demo-a7908          фиктивный модем SIMCom A7908E-M2
   -h, --help                эта справка
   -V, --version             версия
 
@@ -94,6 +98,7 @@ fn parse_args() -> Result<Config, String> {
             "--state" => cfg.state = take(&mut i, "--state")?,
             "--demo" => cfg.demo = true,
             "--demo-intel" => cfg.demo_intel = true,
+            "--demo-a7908" => cfg.demo_a7908 = true,
             "-h" | "--help" => {
                 println!("{}", usage());
                 std::process::exit(0);
@@ -121,6 +126,9 @@ fn main() {
     let detected = if cfg.demo_intel {
         eprintln!("modemui: РЕЖИМ DEMO (Intel) — модем не опрашивается, данные вымышленные");
         Some(at::Transport::MockIntel)
+    } else if cfg.demo_a7908 {
+        eprintln!("modemui: РЕЖИМ DEMO (SIMCom A7908) — модем не опрашивается, данные вымышленные");
+        Some(at::Transport::MockSimCom)
     } else if cfg.demo {
         eprintln!("modemui: РЕЖИМ DEMO — модем не опрашивается, данные вымышленные");
         Some(at::Transport::Mock)
@@ -154,9 +162,17 @@ fn main() {
             println!("modemui: модем Intel XMM, фиксация через at@sic:freq_lock");
             println!("modemui: состояние фиксации хранится в {}", cfg.state);
         }
+        modem::Family::SimCom => {
+            println!(
+                "modemui: модем SIMCom (A7908E-M2), фиксация через ndmc-CLI \
+                 `interface X mobile lte lock`"
+            );
+            println!("modemui: состояние фиксации хранится в {}", cfg.state);
+        }
         modem::Family::Unknown => eprintln!(
             "modemui: ВНИМАНИЕ - семейство модема не определено, фиксация работать не будет\n\
-             (не ответили ни at^efs для Qualcomm, ни AT+XCESQ для Intel)"
+             (не ответили ни at^efs для Qualcomm, ни AT+XCESQ для Intel, \
+             и ATI без признаков SIMCom)"
         ),
     }
     println!(

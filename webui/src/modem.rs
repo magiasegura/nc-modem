@@ -7,6 +7,7 @@
 
 use crate::at::{AtPort, AtResponse, Transport};
 use crate::intel;
+use crate::simcom;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -125,6 +126,10 @@ pub enum Family {
     Qualcomm,
     /// Intel XMM (Fibocom L8x0): фиксация командой `at@sic:freq_lock`.
     Intel,
+    /// SIMCom SIM79XX / Fibocom A7908E-M2: `at^efs` вырезан, метрики через
+    /// `AT+CPSI?`, фиксация — штатной CLI роутера
+    /// (`interface X mobile lte lock earfcn Y pci Z`).
+    SimCom,
     /// Ни то, ни другое — фиксация недоступна.
     #[default]
     Unknown,
@@ -135,6 +140,7 @@ impl Family {
         match self {
             Family::Qualcomm => "qualcomm",
             Family::Intel => "intel",
+            Family::SimCom => "simcom",
             Family::Unknown => "unknown",
         }
     }
@@ -177,7 +183,8 @@ pub struct Modem {
 }
 
 /// Кандидаты на метрики служебной соты, в порядке предпочтения.
-const SERVING_CANDIDATES: &[&str] = &["AT^DEBUG?", "AT+GTCCINFO?", "AT+CESQ", "AT+CSQ"];
+const SERVING_CANDIDATES: &[&str] =
+    &["AT^DEBUG?", "AT+GTCCINFO?", "AT+CPSI?", "AT+CESQ", "AT+CSQ"];
 /// Кандидаты на список соседей.
 const NEIGHBOR_CANDIDATES: &[&str] = &["AT$QCRSRP?", "AT+VZWRSRP?", "AT+GTCCINFO?"];
 /// Кандидаты на чтение бэндов.
@@ -242,9 +249,20 @@ impl Modem {
             caps.efs = r.ok || r.body.to_ascii_uppercase().contains("EFS:");
         }
 
+        // SIMCom (A7908E-M2 и ко.) распознаём по ATI: модем прямо пишет
+        // "Manufacturer: SIMCOM INCORPORATED" / "Model: A7908E-M2". У них
+        // at^efs вырезан, а фиксация делается CLI роутера.
+        let info_upper = self.info().to_ascii_uppercase();
+        let is_simcom =
+            info_upper.contains("SIMCOM") || info_upper.contains("A7908") || info_upper.contains("A7906");
+
         // Семейство определяем по тому, что модем реально умеет, а не по ATI:
         // на L860 ATI отдаёт лишь дату сборки, без модели.
-        if caps.efs {
+        if is_simcom {
+            caps.family = Family::SimCom;
+            // Метрики у SIMCom забираем через AT+CPSI? — попадёт в SERVING_CANDIDATES
+            // ниже. Соседей штатно нет, бэнды пока не трогаем.
+        } else if caps.efs {
             caps.family = Family::Qualcomm;
         } else if self
             .send("AT+XCESQ?")
@@ -327,6 +345,30 @@ impl Modem {
             return Ok(st);
         }
 
+        // SIMCom тоже read-only на этом фронте: ndmc-CLI ставит блокировку,
+        // но публичной команды чтения обратно нет.
+        if self.caps().family == Family::SimCom {
+            let mut st = LockState {
+                from_our_records: true,
+                ..Default::default()
+            };
+            if let Some((earfcn, pci)) = self.simcom_store().load() {
+                match (earfcn, pci) {
+                    (Some(e), Some(p)) => {
+                        st.pci_earfcn = Some(e);
+                        st.pci = Some(p);
+                    }
+                    (Some(e), None) => {
+                        // Только фиксация несущей: uconv к u16 без обрезки данных,
+                        // потому что earfcn_lock у SIMCom всё равно ограничен LTE-B.
+                        st.earfcn = u16::try_from(e).ok();
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(st);
+        }
+
         let mut st = LockState::default();
 
         let e = self.send(&format!("at^efs=\"{}\"", EFS_EARFCN))?;
@@ -402,6 +444,11 @@ impl Modem {
                 "модемы Intel не умеют фиксировать одну лишь несущую — укажите ещё и PCI"
                     .to_string(),
             ),
+            Family::SimCom => {
+                self.send_ndmc_cli(&simcom::lock_earfcn_cli(earfcn))?;
+                self.simcom_store().save(Some(earfcn as u32), None);
+                Ok(())
+            }
             Family::Unknown => Err(NO_FAMILY.to_string()),
         }
     }
@@ -430,6 +477,11 @@ impl Modem {
                 self.lock_store().save(earfcn, pci);
                 Ok(())
             }
+            Family::SimCom => {
+                self.send_ndmc_cli(&simcom::lock_pci_cli(earfcn, pci))?;
+                self.simcom_store().save(Some(earfcn), Some(pci));
+                Ok(())
+            }
             Family::Unknown => Err(NO_FAMILY.to_string()),
         }
     }
@@ -453,12 +505,31 @@ impl Modem {
                 self.lock_store().clear();
                 Ok(())
             }
+            Family::SimCom => {
+                self.send_ndmc_cli(simcom::unlock_cli())?;
+                self.simcom_store().clear();
+                Ok(())
+            }
             Family::Unknown => Err(NO_FAMILY.to_string()),
         }
     }
 
     fn lock_store(&self) -> intel::LockStore {
         intel::LockStore::new(&self.state_path)
+    }
+
+    fn simcom_store(&self) -> simcom::LockStore {
+        simcom::LockStore::new(&self.state_path)
+    }
+
+    /// Прогнать ndmc-CLI подкоманду для семейства, где фиксация делается
+    /// не сырым AT (SIMCom). Ошибку транспорта пробрасываем в вызывающий код.
+    fn send_ndmc_cli(&self, subcmd: &str) -> Result<String, String> {
+        let mut port = self
+            .port
+            .lock()
+            .map_err(|_| "AT-порт отравлен".to_string())?;
+        port.send_ndmc_cli(subcmd)
     }
 
     pub fn reset_modem(&self) -> Result<(), String> {
@@ -649,6 +720,44 @@ pub fn parse_signal(body: &str) -> Signal {
                 s.rsrq = cesq_rsrq(nums[4]);
                 s.rsrp = cesq_rsrp(nums[5]);
             }
+        } else if upper.starts_with("+CPSI:") {
+            // SIMCom SIM79XX / Fibocom A7908E-M2:
+            // +CPSI: LTE,Online,MCC-MNC,TAC,SCellID,PCI,EUTRAN-BAND<n>,EARFCN,DLBW,ULBW,RSRQ,RSRP,RSSI,SNR
+            // RSRQ/RSRP/RSSI выдаются десятыми долями dB, SNR — целыми dB.
+            let raw = t.trim_start_matches(|c: char| c != ':').trim_start_matches(':');
+            let fields: Vec<&str> = raw.split(',').map(|f| f.trim()).collect();
+            if fields.len() >= 8 && fields[0].eq_ignore_ascii_case("LTE") {
+                if let Ok(v) = fields[5].parse::<u16>() {
+                    s.pci = Some(v);
+                }
+                if let Ok(v) = fields[7].parse::<u32>() {
+                    s.earfcn = Some(v);
+                }
+            }
+            if fields.len() >= 14 && fields[0].eq_ignore_ascii_case("LTE") {
+                // SIMCom/A7908 отдаёт метрики в одном из трёх форматов, а
+                // манулы этого явно не оговаривают. Различаем по знаку:
+                //   * положительный  — 3GPP-индекс (реально видно на A7908E-M2);
+                //   * отрицательный ниже пола — целое в десятых dB (SIM79xx-вариант);
+                //   * отрицательный в обычном диапазоне — сразу dBm/dB.
+                let parse = |i: usize| fields.get(i).and_then(|v| v.parse::<i32>().ok());
+                let rsrq_of = |v: i32| -> f64 {
+                    let x = v as f64;
+                    if x < -30.0 { x / 10.0 } else if x > 0.0 { -19.5 + x * 0.5 } else { x }
+                };
+                let rsrp_of = |v: i32| -> f64 {
+                    let x = v as f64;
+                    if x < -140.0 { x / 10.0 } else if x >= 0.0 { -140.0 + x } else { x }
+                };
+                let rssi_of = |v: i32| -> f64 {
+                    let x = v as f64;
+                    if x < -140.0 { x / 10.0 } else if x >= 0.0 { -110.0 + x } else { x }
+                };
+                if s.rsrq.is_none() { s.rsrq = parse(10).map(rsrq_of); }
+                if s.rsrp.is_none() { s.rsrp = parse(11).map(rsrp_of); }
+                if s.rssi.is_none() { s.rssi = parse(12).map(rssi_of); }
+                if s.sinr.is_none() { s.sinr = parse(13).map(|v| v as f64); }
+            }
         } else if let Some(rest) = upper.strip_prefix("+CSQ:") {
             let nums = split_nums(rest);
             if !nums.is_empty() {
@@ -668,7 +777,16 @@ pub fn parse_signal(body: &str) -> Signal {
             }
         }
 
-        for (key, slot) in [("RSRP", 0), ("RSRQ", 1), ("SINR", 2), ("RSSI", 3)] {
+        // "RS-SNR" — T77W968: SINR приходит именно так и до блока SCell*, где
+        // встречается посторонний "SNR:" от вторичных сот. Порядок важен:
+        // как только RS-SNR подхвачен, guard `is_none()` защищает от перезаписи.
+        for (key, slot) in [
+            ("RSRP", 0),
+            ("RSRQ", 1),
+            ("RS-SNR", 2),
+            ("SINR", 2),
+            ("RSSI", 3),
+        ] {
             if upper.contains(key) && !upper.starts_with("+CESQ") {
                 if let Some(v) = signed_number_after(t, key) {
                     match slot {
@@ -901,6 +1019,69 @@ mod tests {
         assert_eq!(s.rsrp, Some(-95.0));
         assert_eq!(s.rsrq, Some(-11.0));
         assert_eq!(s.sinr, Some(12.5));
+    }
+
+    #[test]
+    fn parses_cpsi_simcom_scaled() {
+        // SIM79XX/A7908 в scaled-варианте: RSRQ/RSRP/RSSI ×10, SNR в целых dB.
+        let s = parse_signal(
+            "+CPSI: LTE,Online,250-02,0x2608,26025234,42,EUTRAN-BAND7,3048,5,5,-102,-720,-486,15",
+        );
+        assert_eq!(s.pci, Some(42));
+        assert_eq!(s.earfcn, Some(3048));
+        assert_eq!(s.rsrq, Some(-10.2));
+        assert_eq!(s.rsrp, Some(-72.0));
+        assert_eq!(s.rssi, Some(-48.6));
+        assert_eq!(s.sinr, Some(15.0));
+    }
+
+    #[test]
+    fn parses_cpsi_a7908_3gpp_indices() {
+        // Реальный ответ Fibocom/SIMCom A7908E-M2: RSRQ/RSRP/RSSI приходят как
+        // 3GPP-индексы (положительные), SNR — сразу в dB.
+        let s = parse_signal(
+            "+CPSI: LTE,Online,250-02,0x13B5,199629825,392,EUTRAN-BAND7,2850,5,5,23,54,53,24",
+        );
+        assert_eq!(s.pci, Some(392));
+        assert_eq!(s.earfcn, Some(2850));
+        assert_eq!(s.rsrq, Some(-8.0));
+        assert_eq!(s.rsrp, Some(-86.0));
+        assert_eq!(s.rssi, Some(-57.0));
+        assert_eq!(s.sinr, Some(24.0));
+    }
+
+    #[test]
+    fn parses_cpsi_simcom_direct_dbm() {
+        // Ветвь, где модуль отдаёт значения сразу в dBm — не должно делить на 10.
+        let s = parse_signal(
+            "+CPSI: LTE,Online,250-02,0x2608,26025234,161,EUTRAN-BAND3,1575,5,5,-10,-95,-48,12",
+        );
+        assert_eq!(s.pci, Some(161));
+        assert_eq!(s.earfcn, Some(1575));
+        assert_eq!(s.rsrq, Some(-10.0));
+        assert_eq!(s.rsrp, Some(-95.0));
+        assert_eq!(s.rssi, Some(-48.0));
+        assert_eq!(s.sinr, Some(12.0));
+    }
+
+    #[test]
+    fn parses_rs_snr_from_t77w968_debug() {
+        // Реальный фрагмент AT^DEBUG? с Dell/Foxconn T77W968: SINR у него
+        // называется RS-SNR, а ниже висят SCell* с посторонним SNR:… — они не
+        // должны перебивать значение серверной соты.
+        let body = "RSRP: -80.3dBm\n\
+                    RSRQ: -10.2dB\n\
+                    RSSI: -48.6dBm\n\
+                    RS-SNR: 15dB\n\
+                    SCell1:\n\
+                    RSSI:-49.2dBm,SNR:12.0dB\n\
+                    SCell2:\n\
+                    RSSI:-48.5dBm,SNR:10.2dB";
+        let s = parse_signal(body);
+        assert_eq!(s.rsrp, Some(-80.3));
+        assert_eq!(s.rsrq, Some(-10.2));
+        assert_eq!(s.rssi, Some(-48.6));
+        assert_eq!(s.sinr, Some(15.0));
     }
 
     #[test]

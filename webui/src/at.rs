@@ -27,6 +27,8 @@ pub enum Transport {
     Mock,
     /// Фиктивный модем Intel XMM для `--demo-intel`.
     MockIntel,
+    /// Фиктивный SIMCom A7908E-M2 для `--demo-a7908`.
+    MockSimCom,
 }
 
 impl Transport {
@@ -36,6 +38,7 @@ impl Transport {
             Transport::Serial { dev } => format!("serial:{}", dev),
             Transport::Mock => "demo qualcomm (модем не подключён)".to_string(),
             Transport::MockIntel => "demo intel (модем не подключён)".to_string(),
+            Transport::MockSimCom => "demo simcom a7908 (модем не подключён)".to_string(),
         }
     }
 }
@@ -96,8 +99,26 @@ impl AtPort {
             Transport::Serial { dev } => serial_send(dev, cmd, timeout)?,
             Transport::Mock => mock_send(cmd),
             Transport::MockIntel => mock_intel_send(cmd),
+            Transport::MockSimCom => mock_simcom_send(cmd),
         };
         Ok(parse_response(cmd, &raw))
+    }
+
+    /// Прогнать команду через ndmc-CLI без `tty send`: используется для
+    /// A7908 (SIMCom), где фиксация делается штатной командой роутера
+    /// `interface <iface> mobile lte lock …`, а не сырым AT.
+    pub fn send_ndmc_cli(&mut self, subcmd: &str) -> Result<String, String> {
+        match &self.transport {
+            Transport::Ndmc { iface } => ndmc_cli_send(iface, subcmd),
+            Transport::MockSimCom => Ok(mock_simcom_cli(subcmd)),
+            Transport::Serial { .. } => Err(
+                "фиксация A7908 через прямой AT-порт не реализована — нужен ndmc-транспорт"
+                    .to_string(),
+            ),
+            Transport::Mock | Transport::MockIntel => {
+                Err("этот демо-режим не эмулирует ndmc-CLI".to_string())
+            }
+        }
     }
 
     /// Перейти на прямой порт: CLI Keenetic умеет портить кавычки в `at^efs="…"`.
@@ -123,6 +144,22 @@ fn ndmc_send(iface: &str, cmd: &str) -> Result<String, String> {
     let out = Command::new("ndmc")
         .arg("-c")
         .arg(format!("interface {} tty send {}", iface, cmd))
+        .output()
+        .map_err(|e| format!("не запустить ndmc: {}", e))?;
+
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if text.trim().is_empty() {
+        text = String::from_utf8_lossy(&out.stderr).into_owned();
+    }
+    Ok(text)
+}
+
+/// Полноценная CLI-команда роутера, без `tty send`. Например:
+/// `interface UsbLte0 mobile lte lock earfcn 2850 pci 392`.
+fn ndmc_cli_send(iface: &str, subcmd: &str) -> Result<String, String> {
+    let out = Command::new("ndmc")
+        .arg("-c")
+        .arg(format!("interface {} {}", iface, subcmd))
         .output()
         .map_err(|e| format!("не запустить ndmc: {}", e))?;
 
@@ -271,6 +308,52 @@ OK
 "
         .to_string(),
     }
+}
+
+/// Фиктивный A7908E-M2 для `--demo-a7908`. Ответы — дословный вид реального
+/// SIMCom-модуля: ATI без ^EFS/GT, +CPSI с 3GPP-индексами, отсутствие
+/// поддержки `at^efs`.
+fn mock_simcom_send(cmd: &str) -> String {
+    let upper = cmd.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "ATI" => "Manufacturer: SIMCOM INCORPORATED
+Model: A7908E-M2
+Revision: V1.0.00
+IMEI: 861790000000001
+OK
+"
+        .to_string(),
+        "ATE0" | "AT+CFUN=1,1" => "OK
+"
+        .to_string(),
+        "AT+CPSI?" => "+CPSI: LTE,Online,250-02,0x13B5,199629825,392,EUTRAN-BAND7,2850,5,5,23,54,53,24
+OK
+"
+        .to_string(),
+        "AT+COPS?" => "+COPS: 0,0,\"MegaFon\",7
+OK
+"
+        .to_string(),
+        "AT+CEREG?" => "+CEREG: 2,1
+OK
+"
+        .to_string(),
+        _ => "ERROR
+"
+        .to_string(),
+    }
+}
+
+/// Ответы фиктивного ndmc-CLI для `--demo-a7908`: `mobile lte lock earfcn X pci Y`
+/// возвращают лаконичное «OK», а `no mobile lte lock` — снятие.
+fn mock_simcom_cli(subcmd: &str) -> String {
+    let s = subcmd.trim();
+    if s.starts_with("mobile lte lock") || s.starts_with("no mobile lte lock") {
+        // Роутер обычно отвечает пустой строкой; для UI-логики достаточно, что
+        // это не ошибка.
+        return String::new();
+    }
+    format!("unknown demo CLI: {}\n", s)
 }
 
 // ---------------------------------------------------------------------------

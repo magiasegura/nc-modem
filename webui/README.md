@@ -25,6 +25,7 @@ Rust, фронтенд вшит в бинарь. В `/opt` ничего не д�
 |---|---|---|---|
 | **Qualcomm** (T77W968 / DW5821e) | `at^efs`, запись NV-файлов, hex little-endian | `AT^DEBUG?` / `AT+CESQ` | `AT$QCRSRP?` |
 | **Intel XMM** (Fibocom L850/L860) | `at@sic:freq_lock`, значения десятичные | `AT+XMCI=1` | `AT+XMCI=1` |
+| **SIMCom** (A7908E-M2 и совместимые) | штатная CLI роутера `interface X mobile lte lock earfcn <n> [pci <n>]` | `AT+CPSI?` | — |
 
 Внутри семейства набор команд всё равно различается между прошивками, поэтому выполняется
 **проба возможностей**: каждый кандидат отправляется модему, запоминается ответивший. Разделы,
@@ -40,6 +41,19 @@ Rust, фронтенд вшит в бинарь. В `/opt` ничего не д�
   хранится в файле (`--state`, по умолчанию `/opt/etc/modemui.lock`), а интерфейс честно
   подписывает его «по нашим записям», не выдавая за показание модема.
 - **Перезапуск радиомодуля** делается парой `at+cfun=4` / `at+cfun=15`, а не `at+cfun=1,1`.
+
+### Особенности SIMCom (A7908E-M2)
+
+- `at^efs` в этой прошивке вырезан, публичной AT-команды PCI/EARFCN-lock у SIM79XX нет.
+  Фиксация вешается через штатную CLI роутера — `ndmc -c "interface X mobile lte lock earfcn N [pci N]"`,
+  которая внутри роутера транслируется в QMI. Работает только на ndmc-транспорте
+  (Keenetic/Netcraze); через прямой AT-порт фиксация A7908 недоступна.
+- **Метрики через `AT+CPSI?`** — модуль отдаёт RSRQ/RSRP/RSSI как 3GPP-индексы
+  (RSRP 54 = −86 dBm, RSRQ 23 = −8 dB, RSSI 53 = −57 dBm), SNR — целыми dB.
+  Парсер определяет масштаб по знаку значения и совместим также с SIM79XX-вариантом
+  (десятые доли dB) и «сырым dBm».
+- **Прочитать фиксацию у модема нечем**, поэтому состояние помним сами (`--state`),
+  как и для Intel, и в UI отмечаем «по нашим записям».
 
 ## Установка
 
@@ -88,6 +102,7 @@ modemui [флаги]
   -p, --pass <pass>         пароль Basic-аутентификации
       --demo                фиктивный модем Qualcomm: посмотреть интерфейс без железа
       --demo-intel          фиктивный модем Intel XMM (Fibocom L8x0)
+      --demo-a7908          фиктивный модем SIMCom A7908E-M2
       --state <path>        файл состояния фиксации для Intel
   -h, --help                справка
 ```
@@ -97,6 +112,7 @@ modemui [флаги]
 ```sh
 cargo run --release -- --demo -l 127.0.0.1:8080        # Qualcomm
 cargo run --release -- --demo-intel -l 127.0.0.1:8080  # Intel XMM
+cargo run --release -- --demo-a7908 -l 127.0.0.1:8080  # SIMCom A7908E-M2
 ```
 
 `--demo-intel` отвечает дословным выводом реального Fibocom L860 — на нём же построены тесты
@@ -108,6 +124,7 @@ cargo run --release -- --demo-intel -l 127.0.0.1:8080  # Intel XMM
 src/at.rs      транспорт AT: ndmc / прямой /dev/ttyACM* / mock; разбор ответов
 src/modem.rs   определение семейства, диспетчеризация, история, Qualcomm-путь (EFS)
 src/intel.rs   Intel XMM: freq_lock, разбор +XMCI/+XCESQ/+XLEC, хранение состояния
+src/simcom.rs  SIMCom/A7908: CLI-обёртки роутера для lock, хранение состояния
 src/bands.rs   номер LTE-диапазона по EARFCN (нужен для freq_lock)
 src/http.rs    HTTP/1.1 на TcpListener, Basic-auth, лимиты
 src/json.rs    сериализация JSON и разбор form-urlencoded
