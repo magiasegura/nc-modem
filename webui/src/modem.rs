@@ -183,8 +183,7 @@ pub struct Modem {
 }
 
 /// Кандидаты на метрики служебной соты, в порядке предпочтения.
-const SERVING_CANDIDATES: &[&str] =
-    &["AT^DEBUG?", "AT+GTCCINFO?", "AT+CPSI?", "AT+CESQ", "AT+CSQ"];
+const SERVING_CANDIDATES: &[&str] = &["AT^DEBUG?", "AT+GTCCINFO?", "AT+CPSI?", "AT+CESQ", "AT+CSQ"];
 /// Кандидаты на список соседей.
 const NEIGHBOR_CANDIDATES: &[&str] = &["AT$QCRSRP?", "AT+VZWRSRP?", "AT+GTCCINFO?"];
 /// Кандидаты на чтение бэндов.
@@ -253,8 +252,9 @@ impl Modem {
         // "Manufacturer: SIMCOM INCORPORATED" / "Model: A7908E-M2". У них
         // at^efs вырезан, а фиксация делается CLI роутера.
         let info_upper = self.info().to_ascii_uppercase();
-        let is_simcom =
-            info_upper.contains("SIMCOM") || info_upper.contains("A7908") || info_upper.contains("A7906");
+        let is_simcom = info_upper.contains("SIMCOM")
+            || info_upper.contains("A7908")
+            || info_upper.contains("A7906");
 
         // Семейство определяем по тому, что модем реально умеет, а не по ATI:
         // на L860 ATI отдаёт лишь дату сборки, без модели.
@@ -724,7 +724,9 @@ pub fn parse_signal(body: &str) -> Signal {
             // SIMCom SIM79XX / Fibocom A7908E-M2:
             // +CPSI: LTE,Online,MCC-MNC,TAC,SCellID,PCI,EUTRAN-BAND<n>,EARFCN,DLBW,ULBW,RSRQ,RSRP,RSSI,SNR
             // RSRQ/RSRP/RSSI выдаются десятыми долями dB, SNR — целыми dB.
-            let raw = t.trim_start_matches(|c: char| c != ':').trim_start_matches(':');
+            let raw = t
+                .trim_start_matches(|c: char| c != ':')
+                .trim_start_matches(':');
             let fields: Vec<&str> = raw.split(',').map(|f| f.trim()).collect();
             if fields.len() >= 8 && fields[0].eq_ignore_ascii_case("LTE") {
                 if let Ok(v) = fields[5].parse::<u16>() {
@@ -743,20 +745,46 @@ pub fn parse_signal(body: &str) -> Signal {
                 let parse = |i: usize| fields.get(i).and_then(|v| v.parse::<i32>().ok());
                 let rsrq_of = |v: i32| -> f64 {
                     let x = v as f64;
-                    if x < -30.0 { x / 10.0 } else if x > 0.0 { -19.5 + x * 0.5 } else { x }
+                    if x < -30.0 {
+                        x / 10.0
+                    } else if x > 0.0 {
+                        -19.5 + x * 0.5
+                    } else {
+                        x
+                    }
                 };
                 let rsrp_of = |v: i32| -> f64 {
                     let x = v as f64;
-                    if x < -140.0 { x / 10.0 } else if x >= 0.0 { -140.0 + x } else { x }
+                    if x < -140.0 {
+                        x / 10.0
+                    } else if x >= 0.0 {
+                        -140.0 + x
+                    } else {
+                        x
+                    }
                 };
                 let rssi_of = |v: i32| -> f64 {
                     let x = v as f64;
-                    if x < -140.0 { x / 10.0 } else if x >= 0.0 { -110.0 + x } else { x }
+                    if x < -140.0 {
+                        x / 10.0
+                    } else if x >= 0.0 {
+                        -110.0 + x
+                    } else {
+                        x
+                    }
                 };
-                if s.rsrq.is_none() { s.rsrq = parse(10).map(rsrq_of); }
-                if s.rsrp.is_none() { s.rsrp = parse(11).map(rsrp_of); }
-                if s.rssi.is_none() { s.rssi = parse(12).map(rssi_of); }
-                if s.sinr.is_none() { s.sinr = parse(13).map(|v| v as f64); }
+                if s.rsrq.is_none() {
+                    s.rsrq = parse(10).map(rsrq_of);
+                }
+                if s.rsrp.is_none() {
+                    s.rsrp = parse(11).map(rsrp_of);
+                }
+                if s.rssi.is_none() {
+                    s.rssi = parse(12).map(rssi_of);
+                }
+                if s.sinr.is_none() {
+                    s.sinr = parse(13).map(|v| v as f64);
+                }
             }
         } else if let Some(rest) = upper.strip_prefix("+CSQ:") {
             let nums = split_nums(rest);

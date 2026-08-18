@@ -326,10 +326,12 @@ OK
         "ATE0" | "AT+CFUN=1,1" => "OK
 "
         .to_string(),
-        "AT+CPSI?" => "+CPSI: LTE,Online,250-02,0x13B5,199629825,392,EUTRAN-BAND7,2850,5,5,23,54,53,24
+        "AT+CPSI?" => {
+            "+CPSI: LTE,Online,250-02,0x13B5,199629825,392,EUTRAN-BAND7,2850,5,5,23,54,53,24
 OK
 "
-        .to_string(),
+            .to_string()
+        }
         "AT+COPS?" => "+COPS: 0,0,\"MegaFon\",7
 OK
 "

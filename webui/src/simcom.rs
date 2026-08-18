@@ -102,10 +102,8 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "nc-modem-simcom-test-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("nc-modem-simcom-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&base);
         base
     }
